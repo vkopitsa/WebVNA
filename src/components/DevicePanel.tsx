@@ -1,4 +1,4 @@
-import { useStore, set } from "../store";
+import { useStore, set, log } from "../store";
 import { Check, Section, Select } from "./inputs";
 import { setIfAverage, setPower, setChannelsMode, readVbat, syncClock, screenshot, setSimDut, isSimulator, getStats, download, reconnectKnown, hasWebSerial } from "../controller";
 import { DUTS } from "../lib/mock";
@@ -70,8 +70,8 @@ export function DevicePanel() {
 
       {s.screenshot && (
         <Section title="Screenshot" right={<span className="row" style={{ margin: 0 }}>
-          <button className="small" onClick={() => fetch(s.screenshot!.url).then((r) => r.blob()).then((b) => download(`litevna-screen-${Date.now()}.png`, b))}>{t("Save PNG")}</button>
-          <button className="small" onClick={() => set({ screenshot: null })}>✕</button>
+          <button className="small" onClick={() => fetch(s.screenshot!.url).then((r) => r.blob()).then((b) => download(`litevna-screen-${Date.now()}.png`, b)).catch((e: unknown) => log(t("Screenshot: {0}", e instanceof Error ? e.message : String(e)), "error"))}>{t("Save PNG")}</button>
+          <button className="small" onClick={() => set({ screenshot: null })} aria-label={t("Close")}>✕</button>
         </span>}>
           <div className="screenshot"><img src={s.screenshot.url} alt={t("Device screen {0}×{1}", s.screenshot.width, s.screenshot.height)} /></div>
         </Section>

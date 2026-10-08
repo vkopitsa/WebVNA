@@ -8,7 +8,7 @@ import { applyCalibration, computeErrorTerms, parseCal, serializeCal, type CalDa
 import { FORMAT_BY_ID, traceValues } from "./lib/formats";
 import { nearestIndex, search } from "./lib/analysis";
 import { parseTouchstone, writeCsv, writeTouchstone } from "./lib/touchstone";
-import { get, log, set, TRACE_COLORS, type MemorySlot } from "./store";
+import { ACTIVE_CAL_KEY, get, log, set, TRACE_COLORS, type MemorySlot } from "./store";
 import { tr } from "./i18n";
 
 let vna: LiteVNA | null = null;
@@ -190,8 +190,9 @@ async function acquire(): Promise<SweepPoint[]> {
   const n = Math.max(1, s.swAverage);
   let acc: SweepPoint[] | null = null;
   abort = new AbortController();
+  const segs = segments(); // snapshot: every averaging pass must sweep the same grid
   for (let k = 0; k < n; k++) {
-    const d = await vna.sweepSegments(segments(), {
+    const d = await vna.sweepSegments(segs, {
       signal: abort.signal,
       onProgress: (p) => set({ progress: (k + p) / n }),
     }, 1024);
@@ -215,7 +216,7 @@ export async function sweepOnce() {
   if (!vna || get().running) return;
   set({ running: true, progress: 0 });
   try { await sweepCycle(); }
-  catch (e) { if (!(e instanceof AbortError)) log(tr("Sweep failed: {0}", errMsg(e)), "error"); }
+  catch (e) { if (!(e instanceof AbortError) && vna) log(tr("Sweep failed: {0}", errMsg(e)), "error"); } // vna === null: disconnected mid-sweep
   finally { set({ running: false }); }
 }
 
@@ -226,7 +227,7 @@ export async function startContinuous() {
     try { await sweepCycle(); }
     catch (e) {
       if (e instanceof AbortError && get().continuous) continue; // stimulus changed: restart the sweep
-      if (!(e instanceof AbortError)) log(tr("Sweep failed: {0}", errMsg(e)), "error");
+      if (!(e instanceof AbortError) && vna) log(tr("Sweep failed: {0}", errMsg(e)), "error");
       break;
     }
     await new Promise((r) => setTimeout(r, 0));
@@ -329,17 +330,16 @@ export function finishCalibration(name = `Cal ${new Date().toLocaleString()}`) {
   log(tr("Calibration applied: {0}{1}.", Object.keys(m).map((k) => tr(k.toUpperCase())).join(", "), cal.enhancedResponse ? ` + ${tr("enhanced response")}` : ""));
 }
 
-const ACTIVE_CAL = "webvna.activecal";
 export function setCalibration(cal: CalData | null) {
   set({ cal, terms: cal ? computeErrorTerms(cal) : null, calEnabled: true });
-  try { if (cal) localStorage.setItem(ACTIVE_CAL, serializeCal(cal)); else localStorage.removeItem(ACTIVE_CAL); } catch { /* storage full or unavailable */ }
+  try { if (cal) localStorage.setItem(ACTIVE_CAL_KEY, serializeCal(cal)); else localStorage.removeItem(ACTIVE_CAL_KEY); } catch { /* storage full or unavailable */ }
   recompute();
 }
 
 /** Restore the calibration that was active when the page was last closed. */
 export function restoreActiveCal() {
   try {
-    const t = localStorage.getItem(ACTIVE_CAL);
+    const t = localStorage.getItem(ACTIVE_CAL_KEY);
     if (!t) return;
     const cal = parseCal(t);
     set({ cal, terms: computeErrorTerms(cal) });
@@ -382,8 +382,8 @@ export function loadCalSlot(name: string) {
     const t = localStorage.getItem(CAL_PREFIX + name);
     if (!t) return;
     const cal = parseCal(t);
+    setCalibration(cal); // computes the terms first: a kit that fails never reaches the store
     set({ kit: cal.kit, enhancedResponse: cal.enhancedResponse });
-    setCalibration(cal);
     log(tr("Calibration \"{0}\" loaded.", name));
   } catch (e) { log(tr("Couldn't load calibration: {0}", errMsg(e)), "error"); }
 }
@@ -410,8 +410,8 @@ export async function importTouchstoneFile(file: File) {
 export async function importCalFile(file: File) {
   try {
     const cal = parseCal(await file.text());
-    set({ kit: cal.kit, enhancedResponse: cal.enhancedResponse });
     setCalibration(cal);
+    set({ kit: cal.kit, enhancedResponse: cal.enhancedResponse });
     log(tr("Calibration loaded from {0}.", file.name));
   } catch (e) { log(tr("Import {0}: {1}", file.name, errMsg(e)), "error"); }
 }

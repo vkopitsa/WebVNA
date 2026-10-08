@@ -31,11 +31,15 @@ export const USB_IDS = [
   { usbVendorId: 0x04b4, usbProductId: 0x0008 }, // LiteVNA, NanoVNA V2 / V2Plus / V2Plus4
 ];
 
-/** Registers the app must never write (DFU / flash). 0xEE (screenshot) is the only exception. */
-export function isForbiddenWrite(addr: number, op: number, value?: number): boolean {
+/** Registers the app must never write (DFU / flash). 0xEE (screenshot) is the only exception. Every byte of a multi-byte write is checked. */
+export function isForbiddenWrite(addr: number, op: number, value?: number | readonly number[]): boolean {
   if (op === OP.WRITEFIFO) return true;
-  if (addr >= 0xe0 && addr <= 0xef && addr !== REG.CAPTURE) return true;
-  if (addr === REG.DATA_MODE && value === DATA_MODE.RAW) return true;
+  const n = op >= OP.WRITE && op <= OP.WRITE8 ? 1 << (op - OP.WRITE) : 1;
+  const bytes = typeof value === "number" ? le(value, n) : value; // a packed number is written little-endian
+  for (let a = addr; a < addr + n; a++) {
+    if (a >= 0xe0 && a <= 0xef && a !== REG.CAPTURE) return true;
+    if (a === REG.DATA_MODE && bytes?.[a - addr] === DATA_MODE.RAW) return true;
+  }
   return false;
 }
 

@@ -37,6 +37,7 @@ export function MarkersPanel() {
     } else if (kind === "edelay") {
       const t = s.traces[m.trace] ?? s.traces[0];
       const gd = groupDelay(d, t.channel)[nearestIndex(d, f)];
+      if (!Number.isFinite(gd)) return; // no sweep data yet (or NaN point): don't poison the persisted correction
       set({ correction: { ...s.correction, [t.channel === "s11" ? "s11Delay" : "s21Delay"]: (t.channel === "s11" ? s.correction.s11Delay : s.correction.s21Delay) + gd } });
       recompute();
       return;

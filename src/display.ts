@@ -39,9 +39,11 @@ export function traceData(s: State, t: Trace): SweepPoint[] {
 export function autoScale(y: ArrayLike<number>, divisions = 8, opt: { floor?: number; cap?: number } = {}): TraceScale {
   let lo = Infinity, hi = -Infinity;
   for (let i = 0; i < y.length; i++) { const v = y[i]; if (isFinite(v)) { lo = Math.min(lo, v); hi = Math.max(hi, v); } }
-  if (opt.floor != null && isFinite(lo)) lo = opt.floor;
+  if (!isFinite(lo)) {
+    if (opt.floor == null) return { auto: true, perDiv: 1, ref: 0, refPos: 0 };
+    lo = opt.floor; hi = opt.cap ?? lo + divisions; // no finite value (e.g. SWR all ∞): keep the floor
+  } else if (opt.floor != null) lo = opt.floor;
   if (opt.cap != null) hi = Math.min(hi, opt.cap);
-  if (!isFinite(lo)) return { auto: true, perDiv: 1, ref: 0, refPos: 0 };
   if (hi - lo < 1e-15) { const d = Math.abs(hi) * 0.1 || 1; lo -= d; hi += d; }
   let perDiv = niceStep((hi - lo) / divisions);
   let ref = Math.floor(lo / perDiv) * perDiv;
@@ -110,6 +112,8 @@ export function zText(s: SweepPoint, ch: "s11" | "s21", mode: SmithReadout = "rl
   const g = s[ch];
   const z = impedance(g, ch);
   const deg = (C.arg(g) * 180) / Math.PI;
+  const open = z[0] === Infinity; // exact open: Z = ∞, Y = 0 (NaN stays NaN)
+  if (open && (mode === "rx" || mode === "rlc" || mode === "rpxp" || mode === "rplc")) return "∞ Ω";
   switch (mode) {
     case "rx": return `${z[0].toFixed(2)} ${sgn(z[1])} j${Math.abs(z[1]).toFixed(2)} Ω`;
     case "lin": return `${C.abs(g).toFixed(4)} ∠ ${deg.toFixed(2)}°`;

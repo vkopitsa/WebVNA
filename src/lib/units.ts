@@ -41,15 +41,17 @@ export function parseHz(s: string): number | null {
   const m = s.trim().replace(/,/g, ".").match(/^([-+]?\d*\.?\d+(?:e[-+]?\d+)?)\s*([kKmMgG]?)(?:hz|Hz|HZ)?$/);
   if (!m) return null;
   const k = { "": 1, k: 1e3, K: 1e3, m: 1e6, M: 1e6, g: 1e9, G: 1e9 }[m[2]] ?? 1;
-  return parseFloat(m[1]) * k;
+  const v = parseFloat(m[1]) * k;
+  return Number.isFinite(v) ? v : null;
 }
 
-/** Parse a value with optional SI prefix: "10p", "4.7n", "1.2u", "50". */
+/** Parse a value with optional SI prefix and unit: "10p", "4.7n", "1.2u", "50", "12 nH". Case matters (m = milli, M = mega) except k/K. */
 export function parseSI(s: string): number | null {
-  const m = s.trim().replace(/,/g, ".").match(/^([-+]?\d*\.?\d+(?:e[-+]?\d+)?)\s*([fpnuµmkMG]?)/);
+  const m = s.trim().replace(/,/g, ".").match(/^([-+]?\d*\.?\d+(?:e[-+]?\d+)?)\s*([fpnuµmkKMG]?)[A-Za-zΩ°]*$/);
   if (!m) return null;
-  const k: Record<string, number> = { "": 1, f: 1e-15, p: 1e-12, n: 1e-9, u: 1e-6, "µ": 1e-6, m: 1e-3, k: 1e3, M: 1e6, G: 1e9 };
-  return parseFloat(m[1]) * (k[m[2]] ?? 1);
+  const k: Record<string, number> = { "": 1, f: 1e-15, p: 1e-12, n: 1e-9, u: 1e-6, "µ": 1e-6, m: 1e-3, k: 1e3, K: 1e3, M: 1e6, G: 1e9 };
+  const v = parseFloat(m[1]) * (k[m[2]] ?? 1);
+  return Number.isFinite(v) ? v : null;
 }
 
 /** A "nice" step (1, 2, 5 × 10^n) ≥ raw. */

@@ -141,7 +141,7 @@ table.data tr.active td { background: var(--panel2); }
 .kv > :nth-child(odd) { color: var(--muted); }
 .screenshot img { max-width: 100%; image-rendering: pixelated; border: 1px solid var(--line); border-radius: 4px; }
 
-.mobile-only { display: none; }
+.mobile-only, .backdrop { display: none; }
 
 @media (max-width: 1100px) {
   /* Stacked charts are taller than the viewport: size to content so markers/analysis sit below, not underneath. */
@@ -161,7 +161,7 @@ table.data tr.active td { background: var(--panel2); }
     padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom);
   }
   .side.open { transform: none; box-shadow: 0 0 24px rgba(0, 0, 0, 0.35); }
-  .backdrop { position: fixed; inset: 0; z-index: 19; background: rgba(0, 0, 0, 0.4); }
+  .backdrop { display: block; position: fixed; inset: 0; z-index: 19; background: rgba(0, 0, 0, 0.4); }
   .tabs { position: sticky; top: 0; background: var(--panel); z-index: 1; }
   .tabs button { padding: 7px 10px; font-size: 14px; }
   .drawer-close { margin-left: auto; }

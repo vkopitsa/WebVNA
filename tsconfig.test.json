@@ -22,5 +22,5 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src/lib", "src/i18n.test.ts"]
+  "include": ["src/lib", "src/i18n.test.ts", "src/app.test.ts"]
 }

@@ -70,7 +70,7 @@ export function CalibrationPanel() {
           <div className="row" key={n}>
             <span style={{ flex: 1 }}>{n}</span>
             <button className="small" onClick={() => loadCalSlot(n)}>{t("Recall")}</button>
-            <button className="small danger" onClick={() => { deleteCalSlot(n); setSlots(listCalSlots()); }}>✕</button>
+            <button className="small danger" onClick={() => { deleteCalSlot(n); setSlots(listCalSlots()); }} aria-label={t("Delete")}>✕</button>
           </div>
         ))}
         <div className="row">

@@ -16,7 +16,8 @@ export const C = {
   polar: (r: number, t: number): Complex => [r * Math.cos(t), r * Math.sin(t)],
   conj: (a: Complex): Complex => [a[0], -a[1]],
   neg: (a: Complex): Complex => [-a[0], -a[1]],
-  inv: (a: Complex): Complex => C.div([1, 0], a),
+  /** 1/a; an infinite a (e.g. Z of an exact open) gives 0. */
+  inv: (a: Complex): Complex => (a[0] === Infinity || a[0] === -Infinity || a[1] === Infinity || a[1] === -Infinity ? [0, 0] : C.div([1, 0], a)),
   /** e^{jθ} */
   expj: (t: number): Complex => [Math.cos(t), Math.sin(t)],
   lerp: (a: Complex, b: Complex, t: number): Complex => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t],

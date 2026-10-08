@@ -26,7 +26,10 @@ export function useCanvas(draw: (ctx: CanvasRenderingContext2D, w: number, h: nu
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
     const onScheme = () => paint();
     mq.addEventListener("change", onScheme);
-    return () => { ro.disconnect(); mq.removeEventListener("change", onScheme); };
+    // Toolbar switches the theme via <html data-theme>; colours are read from CSS at draw time.
+    const mo = new MutationObserver(() => paint());
+    mo.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    return () => { ro.disconnect(); mo.disconnect(); mq.removeEventListener("change", onScheme); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

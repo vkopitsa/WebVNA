@@ -148,6 +148,7 @@ export function SmithChart() {
         onPointerDown={(e) => { (e.target as HTMLElement).setPointerCapture(e.pointerId); drag.current = true; pick(e); }}
         onPointerMove={(e) => { if (drag.current) pick(e); }}
         onPointerUp={() => { drag.current = false; }}
+        onPointerCancel={() => { drag.current = false; }}
         aria-label={tl("Smith chart. Click or drag to move the active marker.")} />
     </div>
   );

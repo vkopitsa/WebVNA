@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { fmtHz, parseHz, parseSI, si } from "../lib/units";
 import { useStore, set } from "../store";
 import { useT, LANGS, type Lang } from "../i18n";
@@ -8,16 +8,19 @@ export function FreqInput({ value, onChange, min, max, ariaLabel }: { value: num
   const t = useT();
   const [text, setText] = useState(fmtHz(value));
   const [bad, setBad] = useState(false);
-  useEffect(() => { setText(fmtHz(value)); setBad(false); }, [value]);
+  const dirty = useRef(false); // true while the user is editing; cleared on blur so a rejected entry doesn't block outside updates
+  useEffect(() => { if (dirty.current) return; setText(fmtHz(value)); setBad(false); }, [value]);
   const commit = () => {
+    if (!dirty.current) return;
     const v = parseHz(text);
     if (v == null || (min != null && v < min) || (max != null && v > max)) { setBad(true); return; }
-    setBad(false);
-    if (v !== value) onChange(v); else setText(fmtHz(value));
+    setBad(false); dirty.current = false;
+    setText(fmtHz(value)); // re-formatted from the committed value by the effect if it changes
+    if (v !== value) onChange(v);
   };
   return (
     <input type="text" aria-label={ariaLabel && t(ariaLabel)} className={bad ? "bad" : ""} value={text}
-      onChange={(e) => setText(e.target.value)} onBlur={commit} onKeyDown={(e) => e.key === "Enter" && commit()} />
+      onChange={(e) => { dirty.current = true; setText(e.target.value); }} onBlur={() => { commit(); dirty.current = false; }} onKeyDown={(e) => e.key === "Enter" && commit()} />
   );
 }
 
@@ -27,17 +30,20 @@ export function SIInput({ value, onChange, unit = "", ariaLabel, digits = 4 }: {
   const show = (v: number) => (unit ? si(v, unit, digits) : String(+v.toPrecision(digits + 2)));
   const [text, setText] = useState(show(value));
   const [bad, setBad] = useState(false);
+  const dirty = useRef(false);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { setText(show(value)); setBad(false); }, [value, unit]);
+  useEffect(() => { if (dirty.current) return; setText(show(value)); setBad(false); }, [value, unit]);
   const commit = () => {
+    if (!dirty.current) return;
     const v = parseSI(text);
     if (v == null || !isFinite(v)) { setBad(true); return; }
-    setBad(false);
-    if (v !== value) onChange(v); else setText(show(value));
+    setBad(false); dirty.current = false;
+    setText(show(value));
+    if (v !== value) onChange(v);
   };
   return (
     <input type="text" aria-label={ariaLabel && t(ariaLabel)} className={bad ? "bad" : ""} value={text}
-      onChange={(e) => setText(e.target.value)} onBlur={commit} onKeyDown={(e) => e.key === "Enter" && commit()} />
+      onChange={(e) => { dirty.current = true; setText(e.target.value); }} onBlur={() => { commit(); dirty.current = false; }} onKeyDown={(e) => e.key === "Enter" && commit()} />
   );
 }
 

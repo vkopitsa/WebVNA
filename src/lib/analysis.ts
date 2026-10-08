@@ -125,7 +125,7 @@ function fmt(v: number, u: string) {
 export function lcMatch(z: Complex, f: number, z0 = Z0): LcSolution[] {
   const out: LcSolution[] = [];
   const [R, X] = z;
-  if (R <= 0) return out;
+  if (!(R > 0) || !isFinite(R)) return out; // lossless, NaN or an exact open: nothing to match
   const y = C.inv(z), G = y[0], B = y[1];
   // Shunt element at the load, series element towards the source (needs G ≤ 1/Z0).
   if (G <= 1 / z0 + 1e-12) {

@@ -72,7 +72,7 @@ export function DisplayPanel() {
             <input type="checkbox" checked={r.visible} onChange={(e) => set({ refs: s.refs.map((x, k) => (k === i ? { ...x, visible: e.target.checked } : x)) })} aria-label={tl("Show {0}", r.name)} />
             <input type="color" value={r.color} onChange={(e) => set({ refs: s.refs.map((x, k) => (k === i ? { ...x, color: e.target.value } : x)) })} aria-label={tl("{0} colour", r.name)} />
             <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis" }} title={r.name}>{r.name}</span>
-            <button className="small danger" onClick={() => set({ refs: s.refs.filter((_, k) => k !== i) })}>✕</button>
+            <button className="small danger" onClick={() => set({ refs: s.refs.filter((_, k) => k !== i) })} aria-label={tl("Remove")}>✕</button>
           </div>
         ))}
       </Section>

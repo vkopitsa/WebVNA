@@ -35,7 +35,7 @@ export class LiteVNA {
 
   private cmd(bytes: number[]): Promise<void> {
     const op = bytes[0];
-    if (op === OP.WRITEFIFO || (op >= OP.WRITE && op <= OP.WRITE8 && isForbiddenWrite(bytes[1], op, bytes[2])))
+    if (op === OP.WRITEFIFO || (op >= OP.WRITE && op <= OP.WRITE8 && isForbiddenWrite(bytes[1], op, bytes.slice(2))))
       throw new Error(`Refusing to write protected register 0x${bytes[1].toString(16)}.`);
     return this.link.send(new Uint8Array(bytes));
   }
@@ -201,14 +201,18 @@ export class LiteVNA {
 /** Build the segment list for a sweep plan (linear, CW, or approximated logarithmic). */
 export function planSegments(start: number, stop: number, points: number, mode: "linear" | "log" | "cw", cwHz?: number) {
   if (mode === "cw") { const f = cwHz ?? start; return [{ start: f, stop: f, points }]; }
-  if (mode === "linear" || points < 4 || start <= 0 || stop <= start) return [{ start, stop, points }];
+  // Linear when the span is too narrow for a strictly increasing integer-Hz log grid.
+  if (mode === "linear" || points < 4 || start <= 0 || stop - start < points - 1) return [{ start, stop, points }];
   // Log: geometric points grouped into short linear runs (the device only sweeps linearly).
-  const freqs = Array.from({ length: points }, (_, i) => start * Math.pow(stop / start, i / (points - 1)));
+  // The grid is integer Hz and strictly increasing; each run uses an integer step so its last point never passes the next run.
+  const g: number[] = [];
+  for (let i = 0; i < points; i++) g.push(Math.max((g[i - 1] ?? -Infinity) + 1, Math.round(start * Math.pow(stop / start, i / (points - 1)))));
   const per = Math.max(2, Math.min(64, Math.round(points / 24)));
   const segs: { start: number; stop: number; points: number }[] = [];
   for (let i = 0; i < points; i += per) {
     const n = Math.min(per, points - i);
-    segs.push({ start: Math.round(freqs[i]), stop: Math.round(freqs[i + n - 1]), points: n });
+    const step = n > 1 ? Math.floor((g[i + n - 1] - g[i]) / (n - 1)) : 0;
+    segs.push({ start: g[i], stop: g[i] + (n - 1) * step, points: n });
   }
   return segs;
 }

@@ -43,8 +43,8 @@ export function StimulusPanel() {
         <div className="row">
           <button className="small" onClick={() => setRange(center - span, center + span)}>{t("Zoom out ×2")}</button>
           <button className="small" onClick={() => setRange(center - span / 4, center + span / 4)}>{t("Zoom in ×2")}</button>
-          <button className="small" onClick={() => setRange(s.start - span / 4, s.stop - span / 4)}>◀</button>
-          <button className="small" onClick={() => setRange(s.start + span / 4, s.stop + span / 4)}>▶</button>
+          <button className="small" onClick={() => setRange(s.start - span / 4, s.stop - span / 4)} aria-label={t("Shift range down")}>◀</button>
+          <button className="small" onClick={() => setRange(s.start + span / 4, s.stop + span / 4)} aria-label={t("Shift range up")}>▶</button>
         </div>
       </Section>
       <Section title="Sweep">

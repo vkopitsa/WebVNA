@@ -2,13 +2,13 @@ import { describe, expect, it } from "vitest";
 import { C, type Complex } from "./complex";
 import { LiteVNA, planSegments, type SweepPoint } from "./litevna";
 import { MockLink, dutS } from "./mock";
-import { fifoChecksum, REG, DATA_MODE } from "./protocol";
+import { fifoChecksum, isForbiddenWrite, OP, REG, DATA_MODE } from "./protocol";
 import { applyCalibration, computeErrorTerms, IDEAL_KIT, kitGamma, parseCal, serializeCal, solveSOLGeneral, type CalData, type CalKit } from "./calibration";
 import { formatValue, groupDelay, impedance, swr, traceValues } from "./formats";
 import { parseTouchstone, writeCsv, writeTouchstone } from "./touchstone";
 import { cableAnalysis, crystalAnalysis, filterAnalysis, lcMatch, resonances, search, swrBandwidth } from "./analysis";
 import { DEFAULT_TDR, fft, timeDomain } from "./tdr";
-import { parseHz, si } from "./units";
+import { parseHz, parseSI, si } from "./units";
 import { stepScale } from "../components/ScaleTools";
 
 const S = 300e6, E = 600e6, N = 301;
@@ -76,6 +76,26 @@ describe("device driver (simulator)", () => {
     const { vna } = await setup();
     expect(() => vna.write1(0xe0, 1)).toThrow();
     expect(() => vna.write1(REG.DATA_MODE, DATA_MODE.RAW)).toThrow();
+  });
+  it("checks every byte of a multi-byte write", async () => {
+    const { vna } = await setup();
+    expect(() => vna.write8(0xdc, 0)).toThrow(); // bytes land on 0xE0..0xE3
+    expect(() => vna.write2(0xed, 0)).toThrow();
+    expect(isForbiddenWrite(REG.CAPTURE, OP.WRITE)).toBe(false);
+    expect(isForbiddenWrite(0x1f, OP.WRITE8, [0, 0, 0, 0, 0, 0, 0, DATA_MODE.RAW])).toBe(true); // 8th byte hits DATA_MODE
+    expect(isForbiddenWrite(0x1f, OP.WRITE8, [0, 0, 0, 0, 0, 0, 0, 0])).toBe(false);
+    expect(isForbiddenWrite(0x25, OP.WRITE2, 0x0100)).toBe(true); // packed number: high byte lands on DATA_MODE
+    expect(isForbiddenWrite(0x25, OP.WRITE2, 0x0001)).toBe(false);
+  });
+  it("log plan is strictly increasing and stays within the span", () => {
+    const expand = (segs: ReturnType<typeof planSegments>) =>
+      segs.flatMap((s) => { const st = s.points > 1 ? Math.round((s.stop - s.start) / (s.points - 1)) : 0; return Array.from({ length: s.points }, (_, i) => s.start + i * st); });
+    const f = expand(planSegments(10e3, 100e3, 65535, "log"));
+    expect(f.length).toBe(65535);
+    expect(f.every((x, i) => i === 0 || x > f[i - 1])).toBe(true);
+    expect(f[0]).toBe(10e3);
+    expect(f[f.length - 1]).toBeLessThanOrEqual(100e3);
+    expect(planSegments(10e3, 10.001e3, 65535, "log")).toEqual([{ start: 10e3, stop: 10.001e3, points: 65535 }]); // too narrow: linear
   });
   it("aborts a sweep", async () => {
     const { vna } = await setup();
@@ -155,6 +175,13 @@ describe("formats and analysis", () => {
     expect(formatValue("x", p.s11, p.f, "s11")).toBeCloseTo(0, 6);
     expect(formatValue("swr", p.s11, p.f, "s11")).toBeCloseTo(50 / 38, 6);
   });
+  it("an exact open is Z = ∞, Y = 0", () => {
+    expect(impedance([1, 0], "s11")).toEqual([Infinity, 0]);
+    expect(impedance([0, 0], "s21")).toEqual([Infinity, 0]);
+    expect(formatValue("r", [1, 0], 1e9, "s11")).toBe(Infinity);
+    expect(formatValue("g", [1, 0], 1e9, "s11")).toBe(0);
+    expect(formatValue("absy", [1, 0], 1e9, "s11")).toBe(0);
+  });
   it("finds the VSWR bandwidth and resonance", () => {
     const b = swrBandwidth(ant)!;
     expect(ant[b.best].f).toBe(435e6);
@@ -176,6 +203,14 @@ describe("formats and analysis", () => {
   it("L/C match transforms the load to 50 Ω", () => {
     const sols = lcMatch([20, 30], 100e6);
     expect(sols.length).toBeGreaterThan(0);
+  });
+  it("an exact open has Y = 0 and no L/C match", () => {
+    const z = impedance([1, 0], "s11");
+    expect(z[0]).toBe(Infinity);
+    expect(C.inv(z)).toEqual([0, 0]);
+    expect(formatValue("g", [1, 0], 1e8, "s11")).toBe(0);
+    expect(lcMatch(z, 100e6)).toEqual([]);
+    expect(lcMatch([NaN, NaN], 100e6)).toEqual([]);
   });
   it("analyses a band-pass filter", () => {
     const d = Array.from({ length: 801 }, (_, i) => { const f = 100e6 + i * 0.1e6; return { f, ...dutS("filter", f) }; });
@@ -244,5 +279,55 @@ describe("files and units", () => {
     expect(parseHz("1.2 GHz")).toBe(1.2e9);
     expect(parseHz("500k")).toBe(500e3);
     expect(si(1.5e-9, "H")).toBe("1.500 nH");
+    expect(parseHz("1e400")).toBeNull();
+    expect(parseSI("1e400n")).toBeNull();
+  });
+  it("parseSI is strict about prefixes and trailing text", () => {
+    expect(parseSI("12K")).toBe(12e3);
+    expect(parseSI("12k")).toBe(12e3);
+    expect(parseSI("1.5 m")).toBe(1.5e-3);
+    expect(parseSI("2M")).toBe(2e6);
+    expect(parseSI("4.7 nH")).toBeCloseTo(4.7e-9, 18);
+    expect(parseSI("5 xyz123")).toBeNull();
+    expect(parseSI("5#")).toBeNull();
+  });
+  it("rejects malformed Touchstone rows and bad reference impedances", () => {
+    expect(() => parseTouchstone("# HZ S RI R 50\n1 0.5 0 foo\n2 0.5 0\n")).toThrow(/line 2/);
+    expect(() => parseTouchstone("# hz s ri r 50\nnot a number\n")).toThrow(/line 2/);
+    expect(() => parseTouchstone("# HZ S RI R 50\n1 0.5 0\n2 0.5\n")).toThrow(/Truncated/);
+    expect(parseTouchstone("# MHZ S RI R abc\n1 0.5 0\n").z0).toBe(50);
+    expect(parseTouchstone("# MHZ S RI R 0\n1 0.5 0\n").z0).toBe(50);
+    expect(parseTouchstone("# MHZ S RI R 75\n1 1 0\n").data[0].s11).toEqual([1, 0]); // exact open survives renormalisation
+  });
+  it("reads wrapped 2-port rows and stops at a noise-parameter block", () => {
+    const row = (f: number) => `${f} 0.5 0 0.1 0\n 0.1 0 0.2 0`;
+    const wrapped = parseTouchstone(`# MHZ S RI R 50\n${row(1)}\n${row(2)}\n`, "amp.s2p");
+    expect(wrapped.data.map((p) => p.f)).toEqual([1e6, 2e6]);
+    expect(wrapped.data[1].s21).toEqual([0.1, 0]);
+    // Touchstone 1.x noise block: 5 numbers per row, frequency restarts.
+    const v1 = `# MHZ S RI R 50\n1 0.5 0 0.1 0 0.1 0 0.2 0\n2 0.5 0 0.1 0 0.1 0 0.2 0\n! noise\n1 1.5 0.3 45 0.2\n2 1.6 0.3 50 0.2\n`;
+    expect(parseTouchstone(v1, "amp.s2p").data).toHaveLength(2);
+    expect(parseTouchstone(v1.replace(/2 1.6.*\n$/, ""), "amp.s2p").data).toHaveLength(2); // a single short noise row
+    const v2 = `[Version] 2.0\n# MHZ S RI R 50\n[Number of Ports] 2\n[Network Data]\n1 0.5 0 0.1 0 0.1 0 0.2 0\n[Noise Data]\n1 1.5 0.3 45 0.2\n[End]\n`;
+    expect(parseTouchstone(v2, "amp.s2p").data).toHaveLength(1);
+  });
+  it("rejects malformed calibration files", () => {
+    const base = '"format":"webvna-cal","freqs":[1,2],"open":[[0,0],[0,0]],"short":[[0,0],[0,0]],"load":[[0,0],[0,0]]';
+    for (const t of ["null", '{"format":"webvna-cal","freqs":[]}', '{"format":"webvna-cal","freqs":[1,2],"open":[[0,0]]}',
+      '{"format":"webvna-cal","freqs":[null,"a"]}', '{"format":"webvna-cal","freqs":[{},{}]}',
+      `{${base.replace('"open":[[0,0],[0,0]]', '"open":[null,null]')}}`, `{${base.replace('"open":[[0,0],[0,0]]', '"open":[1,2]')}}`,
+      `{${base},"kit":5}`, `{${base},"kit":[]}`])
+      expect(() => parseCal(t)).toThrow("Not a WebVNA calibration file.");
+    // A partial or null kit is filled from the ideal kit, so the terms can be computed.
+    for (const kit of ['{"name":"x"}', "null", '{"open":{"c0":"bad"},"thru":{}}']) {
+      const cal = parseCal(`{${base},"thru":[[1,0],[1,0]],"kit":${kit}}`);
+      expect(cal.kit.open.c0).toBe(0);
+      expect(cal.kit.thru.delayPs).toBe(0);
+      expect(() => computeErrorTerms(cal)).not.toThrow();
+    }
+    for (const extra of ['"enhancedResponse":"false"', '"name":5', '"created":{}'])
+      expect(() => parseCal(`{${base},${extra}}`)).toThrow("Not a WebVNA calibration file.");
+    expect(() => parseCal(`{${base.replace('"freqs":[1,2]', '"freqs":[2,1]')}}`)).toThrow("Not a WebVNA calibration file."); // descending
+    expect(parseCal(`{${base},"kit":{"name":"SMA","open":{"c0":50}}}`).kit).toEqual({ ...IDEAL_KIT, name: "SMA", open: { ...IDEAL_KIT.open, c0: 50 } });
   });
 });

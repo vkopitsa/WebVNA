@@ -59,8 +59,10 @@ export const FORMAT_BY_ID = Object.fromEntries(FORMATS.map((f) => [f.id, f])) as
  * Impedance seen by the VNA. S11: Z = Z0(1+Γ)/(1−Γ). S21: series-through fixture Z = 2·Z0·(1−S21)/S21.
  */
 export function impedance(s: Complex, ch: Channel, z0 = Z0): Complex {
-  if (ch === "s11") return C.scale(C.div(C.add([1, 0], s), C.sub([1, 0], s)), z0);
-  return C.scale(C.div(C.sub([1, 0], s), s), 2 * z0);
+  const den: Complex = ch === "s11" ? C.sub([1, 0], s) : s;
+  if (C.abs2(den) === 0) return [Infinity, 0]; // exact open (S11 = 1) or no transmission (S21 = 0)
+  if (ch === "s11") return C.scale(C.div(C.add([1, 0], s), den), z0);
+  return C.scale(C.div(C.sub([1, 0], s), den), 2 * z0);
 }
 
 export function unwrap(ph: number[]): number[] {
@@ -104,7 +106,7 @@ export function formatValue(fmt: FormatId, s: Complex, f: number, ch: Channel): 
     case "imag": return s[1];
   }
   const z = impedance(s, ch);
-  const y = C.inv(z);
+  const y = C.inv(z); // Y of an open (Z = ∞) is 0
   switch (fmt) {
     case "r": return z[0];
     case "x": return z[1];

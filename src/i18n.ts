@@ -362,6 +362,7 @@ const UK: Record<string, string> = {
   "filter": "фільтр",
   "crystal": "кварц",
   "cable": "кабель",
+  "rlc": "RLC",
   "open": "ХХ",
   "short": "КЗ",
   "load": "навантаження",
@@ -425,6 +426,11 @@ const UK: Record<string, string> = {
   "RETURN LOSS": "ЗАТУХАННЯ ВІДБИТТЯ",
   "MISMATCH LOSS": "ВТРАТИ НЕУЗГОДЖЕННЯ",
   "GAIN": "ПІДСИЛЕННЯ",
+  "Delete": "Видалити",
+  "Remove": "Прибрати",
+  "Close": "Закрити",
+  "Shift range down": "Зсунути діапазон вниз",
+  "Shift range up": "Зсунути діапазон вгору",
 };
 
 export { UK };

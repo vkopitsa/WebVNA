@@ -144,14 +144,33 @@ const PERSIST: (keyof State)[] = [
   "calEnabled", "autoSaveName", "lang",
 ];
 const STORAGE_KEY = "webvna.settings.v1";
+/** The last applied calibration (written by the controller, cleared by resetSettings). */
+export const ACTIVE_CAL_KEY = "webvna.activecal";
+
+/**
+ * A persisted value coerced to the shape of its default, field by field: anything missing or of the wrong type takes the
+ * default, so a settings file from an older (or newer) version keeps every field that still fits. Arrays keep the default's length.
+ */
+function sanitize<T>(v: unknown, d: T): T {
+  if (Array.isArray(d)) return (Array.isArray(v) ? d.map((x, i) => (i < v.length ? sanitize(v[i], x) : x)) : d) as T;
+  if (d === null || typeof d === "string") return (v === null || typeof v === "string" ? v : d) as T; // Trace.memory, Marker.tracking are string | null either way
+  if (typeof d === "object") {
+    if (v === null || typeof v !== "object" || Array.isArray(v)) return d;
+    return Object.fromEntries(Object.entries(d).map(([k, dv]) => [k, sanitize((v as Record<string, unknown>)[k], dv)])) as T;
+  }
+  if (typeof d === "number") return (typeof v === "number" && Number.isFinite(v) ? v : d) as T;
+  return (typeof v === typeof d ? v : d) as T;
+}
 
 function loadPersisted(): Partial<State> {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return {};
     const o = JSON.parse(raw);
+    if (o === null || typeof o !== "object") return {};
     const out: Partial<State> = {};
-    for (const k of PERSIST) if (k in o) (out as Record<string, unknown>)[k] = o[k];
+    for (const k of PERSIST) if (k in o) (out as Record<string, unknown>)[k] = sanitize(o[k], initialState[k]); // malformed fields fall back to the defaults
+    if (out.traces) out.traces = out.traces.map((t, i) => (t.format in FORMAT_BY_ID ? t : initialState.traces[i]));
     return out;
   } catch { return {}; }
 }
@@ -190,6 +209,6 @@ export function setTraceFormat(i: number, format: FormatId) {
 }
 
 export function resetSettings() {
-  try { localStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
+  try { localStorage.removeItem(STORAGE_KEY); localStorage.removeItem(ACTIVE_CAL_KEY); } catch { /* ignore */ } // the cal is reset too; keep storage in step
   set({ ...initialState, lang: get().lang, status: get().status, info: get().info, linkKind: get().linkKind });
 }
