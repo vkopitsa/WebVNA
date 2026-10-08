@@ -27,3 +27,6 @@ hw-report.json
 *.s1p
 *.s2p
 .claude/settings.local.json
+.claude/worktrees/
+test-results
+playwright-report

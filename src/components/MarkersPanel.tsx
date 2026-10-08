@@ -19,7 +19,7 @@ export function MarkersPanel() {
     const td = traceData(s, t);
     if (!td.length) return;
     const fmt = FORMAT_BY_ID[t.format].circular ? "logmag" : t.format;
-    const i = search(traceValues(td, t.channel, fmt), mode, nearestIndex(td, m.f));
+    const i = search(traceValues(td, t.channel, fmt, { core: s.core }), mode, nearestIndex(td, m.f));
     updateMarker(s.activeMarker, { f: td[i].f, enabled: true });
   };
 

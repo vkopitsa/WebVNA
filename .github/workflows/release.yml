@@ -1,0 +1,56 @@
+name: Release
+
+# Merging a version bump (package.json + CHANGELOG.md) to main tags it and publishes a GitHub Release with the built site as a zip.
+on:
+  push:
+    branches: [main]
+    paths: [package.json]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read version
+        id: v
+        run: |
+          version=$(node -p "require('./package.json').version")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if git ls-remote --exit-code --tags origin "refs/tags/v$version" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Tag v$version already exists; nothing to release."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-node@v4
+        if: steps.v.outputs.exists == 'false'
+        with:
+          node-version: 22
+          cache: npm
+      - name: Build and test
+        if: steps.v.outputs.exists == 'false'
+        run: |
+          npm ci
+          npm test
+          npm run build
+      - name: Package
+        if: steps.v.outputs.exists == 'false'
+        run: |
+          sudo apt-get install -y zip >/dev/null
+          (cd dist && zip -qr "../webvna-v${{ steps.v.outputs.version }}.zip" .)
+          node scripts/changelog-section.mjs "${{ steps.v.outputs.version }}" > release-notes.md
+      - name: Tag and publish
+        if: steps.v.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          v="v${{ steps.v.outputs.version }}"
+          gh release create "$v" "webvna-$v.zip" --target "$GITHUB_SHA" --title "WebVNA $v" --notes-file release-notes.md

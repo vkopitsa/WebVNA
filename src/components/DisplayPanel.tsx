@@ -1,9 +1,12 @@
 import { useStore, set, updateTrace, setTraceFormat, MEMORY_SLOTS, type MemorySlot } from "../store";
 import { FORMATS, FORMAT_BY_ID } from "../lib/formats";
 import { Check, Num, Section, Select, Field, SIInput } from "./inputs";
-import { storeMemory, clearMemory } from "../controller";
+import { storeMemory, clearMemory, updateMarkers } from "../controller";
 import { rectSeries } from "../display";
 import type { TdrMode, TdrWindow } from "../lib/tdr";
+import { PADDINGS } from "../lib/tdr";
+import { LimitsSection } from "./LimitsSection";
+import { GateSection } from "./GateSection";
 import { useT } from "../i18n";
 
 export function DisplayPanel() {
@@ -23,7 +26,7 @@ export function DisplayPanel() {
           <div key={i} className="row trace-row" style={{ background: i === s.activeTrace ? "var(--panel2)" : undefined, borderRadius: 6, padding: "2px 4px" }}>
             <input type="checkbox" checked={tr.enabled} onChange={(e) => updateTrace(i, { enabled: e.target.checked })} aria-label={tl("Trace {0} on", i + 1)} />
             <button className={"small" + (i === s.activeTrace ? " on" : "")} onClick={() => set({ activeTrace: i })}>TR{i + 1}</button>
-            <Select value={tr.channel} options={[["s11", "S11"], ["s21", "S21"]]} onChange={(v) => updateTrace(i, { channel: v })} ariaLabel={tl("Trace {0} channel", i + 1)} />
+            <Select value={tr.channel} options={[["s11", "S11"], ["s21", "S21"], ["s12", "S12"], ["s22", "S22"]]} onChange={(v) => updateTrace(i, { channel: v })} ariaLabel={tl("Trace {0} channel", i + 1)} />
             <Select className="fmt" value={tr.format} options={FORMATS.map((f) => [f.id, tl(f.label)] as [typeof f.id, string])} onChange={(v) => setTraceFormat(i, v)} ariaLabel={tl("Trace {0} format", i + 1)} />
             <input type="color" value={tr.color} onChange={(e) => updateTrace(i, { color: e.target.value })} aria-label={tl("Trace {0} colour", i + 1)} />
           </div>
@@ -45,6 +48,8 @@ export function DisplayPanel() {
           <p className="hint">{tl("Double-click the chart to auto-scale all traces.")}</p>
         </Section>
       )}
+
+      <LimitsSection />
 
       <Section title="Memory (stored traces)">
         <div className="grid4">
@@ -93,12 +98,28 @@ export function DisplayPanel() {
           <Field label="X axis">
             <Select value={s.tdr.xAxis} ariaLabel="X axis" options={[["distance", tl("Distance")], ["time", tl("Time")]]} onChange={(v) => set({ tdr: { ...s.tdr, xAxis: v } })} />
           </Field>
+          <Field label="Padding">
+            <Select value={s.tdr.padding} ariaLabel="Zero padding" options={PADDINGS.map((p) => [p, `×${p}`] as [number, string])} onChange={(v) => set({ tdr: { ...s.tdr, padding: v } })} />
+          </Field>
           <Field label="Y axis">
             <Select value={s.tdr.yAxis} ariaLabel="Y axis" options={[["linear", tl("Linear ρ")], ["db", "dB"], ["impedance", tl("Impedance (step)")]]} onChange={(v) => set({ tdr: { ...s.tdr, yAxis: v } })} />
           </Field>
         </div>
         <p className="hint">{tl("Low-pass modes need a sweep that starts near 0 Hz with evenly spaced points (e.g. 50 kHz – 1 GHz); the data is resampled onto a harmonic grid.")}</p>
       </Section>
+
+      <GateSection />
+
+      {s.traces.some((x) => x.format === "mu_r" || x.format === "mu_i") && (
+        <Section title="Core (µ′ / µ″)">
+          <div className="grid3">
+            <Field label="Turns"><Num value={s.core.turns} min={1} step={1} onChange={(v) => { set({ core: { ...s.core, turns: v } }); updateMarkers(); }} ariaLabel="Core turns" /></Field>
+            <Field label="Area (mm²)"><Num value={s.core.areaMm2} min={0.01} step={0.1} onChange={(v) => { set({ core: { ...s.core, areaMm2: v } }); updateMarkers(); }} ariaLabel="Core cross-section area" /></Field>
+            <Field label="Path (mm)"><Num value={s.core.pathMm} min={0.1} step={0.1} onChange={(v) => { set({ core: { ...s.core, pathMm: v } }); updateMarkers(); }} ariaLabel="Core magnetic path length" /></Field>
+          </div>
+          <p className="hint">{tl("Toroid wound with the given turns on the S11 port: µ′ = X/(ωL₀), µ″ = R/(ωL₀), L₀ = µ₀N²A/l. The default approximates an FT-37-43 core.")}</p>
+        </Section>
+      )}
 
       <Section title="Charts">
         <Check checked={s.showRect} onChange={(v) => set({ showRect: v })}>{tl("Rectangular chart")}</Check>{" "}

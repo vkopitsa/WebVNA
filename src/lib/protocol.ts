@@ -31,6 +31,11 @@ export const USB_IDS = [
   { usbVendorId: 0x04b4, usbProductId: 0x0008 }, // LiteVNA, NanoVNA V2 / V2Plus / V2Plus4
 ];
 
+/** NanoVNA V1 / -H / -H4 (STM32 virtual COM port, text shell protocol). */
+export const USB_IDS_V1 = [
+  { usbVendorId: 0x0483, usbProductId: 0x5740 },
+];
+
 /** Registers the app must never write (DFU / flash). 0xEE (screenshot) is the only exception. */
 export function isForbiddenWrite(addr: number, op: number, value?: number): boolean {
   if (op === OP.WRITEFIFO) return true;
@@ -63,6 +68,9 @@ export interface DeviceInfo {
   maxPoints: number;
   minHz: number;
   maxHz: number;
+  /** Text-shell devices (NanoVNA V1/H/H4) only: firmware version string and board name. */
+  firmware?: string;
+  board?: string;
 }
 
 export function identify(info: Pick<DeviceInfo, "variant" | "hardware" | "fwMajor">): { model: string; maxPoints: number; maxHz: number } {

@@ -1,23 +1,42 @@
 // Device control and data flow: connect, sweep, calibrate, markers, memories, files.
-import { LiteVNA, planSegments, AbortError, type SweepPoint } from "./lib/litevna";
+import { planSegments, AbortError, type SweepPoint } from "./lib/litevna";
 import { MockLink } from "./lib/mock";
-import { SerialLink, UsbLink, type LinkBase } from "./lib/links";
-import { DATA_MODE, USB_IDS } from "./lib/protocol";
-import { C } from "./lib/complex";
-import { applyCalibration, computeErrorTerms, parseCal, serializeCal, type CalData, type Standard } from "./lib/calibration";
+import { MockShellLink } from "./lib/mock-shell";
+import { MockLibreLink } from "./lib/mock-libre";
+import { LibreVNA } from "./lib/librevna";
+import { LIBRE_USB_IDS } from "./lib/libre-protocol";
+import type { VnaDriver } from "./lib/driver";
+import { createDriver } from "./lib/detect";
+import { clampPoints } from "./caps";
+import { SerialLink, UsbLink, WebUsbBulkLink, type LinkBase } from "./lib/links";
+import { DATA_MODE, USB_IDS, USB_IDS_V1 } from "./lib/protocol";
+import { computeErrorTerms, parseCal, serializeCal, standardFromTouchstone, type CalData, type Standard } from "./lib/calibration";
+import { averageSweeps } from "./lib/averaging";
+import type { GateSettings } from "./lib/gating";
+import { NO_FIXTURE, applyFixture, type FixtureSettings } from "./lib/deembed";
+import { processData } from "./process";
+import { timeDomain, strongestPeak } from "./lib/tdr";
+import { parseLimits, serializeLimits } from "./lib/limits";
 import { FORMAT_BY_ID, traceValues } from "./lib/formats";
 import { nearestIndex, search } from "./lib/analysis";
+import { combineFlip, fakeFlip } from "./lib/twoport";
 import { parseTouchstone, writeCsv, writeTouchstone } from "./lib/touchstone";
-import { get, log, set, TRACE_COLORS, type MemorySlot } from "./store";
+import { get, log, set, updateTrace, TRACE_COLORS, type MemorySlot, type State } from "./store";
 import { tr } from "./i18n";
 
-let vna: LiteVNA | null = null;
+let vna: VnaDriver | null = null;
 let link: LinkBase | null = null;
 let abort: AbortController | null = null;
 
 export const hasWebSerial = () => typeof navigator !== "undefined" && "serial" in navigator;
 export const hasWebUsb = () => typeof navigator !== "undefined" && "usb" in navigator;
-export const isSimulator = () => link instanceof MockLink;
+export const isSimulator = () => link instanceof MockLink || link instanceof MockShellLink || link instanceof MockLibreLink;
+const ALL_USB_IDS = [...USB_IDS, ...USB_IDS_V1];
+export const BT_SPP = "00001101-0000-1000-8000-00805f9b34fb";
+
+/** Listeners notified after every completed sweep (used by the scripting API). */
+const sweepListeners = new Set<() => void>();
+export function onSweepComplete(cb: () => void) { sweepListeners.add(cb); return () => { sweepListeners.delete(cb); }; }
 
 const hex = (b: Uint8Array, max = 48) =>
   Array.from(b.slice(0, max), (x) => x.toString(16).padStart(2, "0")).join(" ") + (b.length > max ? ` … (${b.length} bytes)` : "");
@@ -26,7 +45,7 @@ function errMsg(e: unknown) { return e instanceof Error ? e.message : String(e);
 
 /* ------------------------------------------------------------------ connection */
 
-async function attach(l: LinkBase) {
+async function attach(l: LinkBase, driver?: VnaDriver) {
   link = l;
   l.trace = (dir, bytes) => { if (get().commsMonitor) log(`${dir === "tx" ? "→" : "←"} ${hex(bytes)}`, "comms"); };
   l.onClose = () => {
@@ -34,34 +53,41 @@ async function attach(l: LinkBase) {
     log(tr("The device was disconnected."), "error");
     stop();
     vna = null; link = null;
-    set({ status: "disconnected", info: null, linkKind: "", running: false });
+    set({ status: "disconnected", info: null, capabilities: null, linkKind: "", running: false });
   };
-  vna = new LiteVNA(l);
   try {
+    vna = driver ?? await createDriver(l);
     const info = await vna.init();
-    set({ status: "connected", info, linkKind: l.kind });
-    log(tr("Connected via {0}: {1}, hw rev {2}, firmware {3}.{4}", l.kind, info.model, info.hardware, info.fwMajor, info.fwMinor));
+    const caps = vna.capabilities;
+    set({ status: "connected", info, capabilities: caps, linkKind: l.kind, serial: "", vbat: null });
+    if (caps.protocol === "v1-shell") log(tr("Connected via {0}: {1}, firmware {2} (experimental NanoVNA V1/H/H4 text protocol).", l.kind, info.model, info.firmware ?? "?"));
+    else if (caps.protocol === "libre") log(tr("Connected via {0}: {1}, firmware {2} (experimental LibreVNA protocol).", l.kind, info.model, info.firmware ?? "?"));
+    else log(tr("Connected via {0}: {1}, hw rev {2}, firmware {3}.{4}", l.kind, info.model, info.hardware, info.fwMajor, info.fwMinor));
     if (info.maxPoints === 0) throw new Error(tr("The device is in DFU/bootloader mode. Restart it normally."));
     const s = get();
-    if (s.points > info.maxPoints) set({ points: info.maxPoints });
+    if (s.points > caps.maxPoints) set({ points: clampPoints(s.points, caps) });
     await applyDeviceSettings();
-    try { set({ serial: await vna.readSerial() }); } catch { /* optional */ }
+    if (caps.serial && vna.readSerial) { try { set({ serial: await vna.readSerial() }); } catch { /* optional */ } }
     await readVbat(true);
   } catch (e) {
     log(tr("Connection failed: {0}", errMsg(e)), "error");
     await l.close();
     vna = null; link = null;
-    set({ status: "disconnected", info: null, linkKind: "" });
+    set({ status: "disconnected", info: null, capabilities: null, linkKind: "" });
     throw e;
   }
 }
 
-export async function connectSerial(port?: SerialPort) {
+export async function connectSerial(port?: SerialPort, bluetooth = false) {
   if (!hasWebSerial()) { log(tr("Web Serial isn't available. Use Chrome or Edge on desktop over https or localhost."), "error"); return; }
   await disconnect();
   set({ status: "connecting" });
   try {
-    const p = port ?? (await navigator.serial.requestPort({ filters: USB_IDS }));
+    const p = port ?? (await navigator.serial.requestPort(
+      bluetooth
+        // Chrome on Android: Bluetooth RFCOMM (SPP) serial; the type definitions may lack these fields.
+        ? ({ allowedBluetoothServiceClassIds: [BT_SPP], filters: [{ bluetoothServiceClassId: BT_SPP }] } as unknown as SerialPortRequestOptions)
+        : { filters: ALL_USB_IDS }));
     const l = new SerialLink();
     await l.open(p);
     await attach(l);
@@ -75,21 +101,31 @@ export async function connectSerial(port?: SerialPort) {
 export async function reconnectKnown(): Promise<boolean> {
   if (!hasWebSerial()) return false;
   const ports = await navigator.serial.getPorts();
-  const p = ports.find((x) => { const i = x.getInfo(); return USB_IDS.some((u) => u.usbVendorId === i.usbVendorId && u.usbProductId === i.usbProductId); });
+  const p = ports.find((x) => { const i = x.getInfo(); return ALL_USB_IDS.some((u) => u.usbVendorId === i.usbVendorId && u.usbProductId === i.usbProductId); });
   if (!p) return false;
   await connectSerial(p);
   return get().status === "connected";
 }
+
+/** Pair and connect a NanoVNA with a Bluetooth serial module (Web Serial over RFCOMM). */
+export const connectBluetooth = () => connectSerial(undefined, true);
 
 export async function connectUsb() {
   if (!hasWebUsb()) { log(tr("WebUSB isn't available in this browser."), "error"); return; }
   await disconnect();
   set({ status: "connecting" });
   try {
-    const dev = await navigator.usb.requestDevice({ filters: USB_IDS.map((u) => ({ vendorId: u.usbVendorId, productId: u.usbProductId })) });
-    const l = new UsbLink();
-    await l.open(dev);
-    await attach(l);
+    const dev = await navigator.usb.requestDevice({ filters: [...ALL_USB_IDS, ...LIBRE_USB_IDS].map((u) => ({ vendorId: u.usbVendorId, productId: u.usbProductId })) });
+    if (LIBRE_USB_IDS.some((u) => u.usbVendorId === dev.vendorId && u.usbProductId === dev.productId)) {
+      // LibreVNA is recognised by its USB ids, not by probing bytes.
+      const l = new WebUsbBulkLink();
+      await l.open(dev);
+      await attach(l, new LibreVNA(l));
+    } else {
+      const l = new UsbLink();
+      await l.open(dev);
+      await attach(l);
+    }
   } catch (e) {
     set({ status: "disconnected" });
     if ((e as Error)?.name !== "NotFoundError") log(tr("WebUSB: {0}", errMsg(e)), "error");
@@ -98,9 +134,12 @@ export async function connectUsb() {
 
 export async function connectSimulator() {
   await disconnect();
-  const m = new MockLink();
-  m.dut = get().simDut;
-  await attach(m);
+  const { simModel, simDut } = get();
+  const m = simModel === "litevna" ? new MockLink()
+    : simModel === "librevna" ? new MockLibreLink()
+    : new MockShellLink({ board: simModel === "nanovna-h4" ? "H4" : "H", firmware: simModel === "nanovna-stock" ? "stock" : "D" });
+  m.dut = simDut;
+  await attach(m, m instanceof MockLibreLink ? new LibreVNA(m) : undefined);
 }
 
 export async function disconnect() {
@@ -108,15 +147,24 @@ export async function disconnect() {
   const l = link, v = vna;
   if (!l) return;
   link = null; vna = null;
-  try { if (v && !(l instanceof MockLink)) await v.exitUsbMode(); } catch { /* ignore */ }
+  try { if (v && !isSimulatorLink(l)) await v.exitUsbMode(); } catch { /* ignore */ }
   await l.close();
-  set({ status: "disconnected", info: null, linkKind: "", running: false });
+  set({ status: "disconnected", info: null, capabilities: null, linkKind: "", running: false });
   log(tr("Disconnected. The device screen is back in control."));
 }
 
+const isSimulatorLink = (l: LinkBase | null): l is MockLink | MockShellLink | MockLibreLink =>
+  l instanceof MockLink || l instanceof MockShellLink || l instanceof MockLibreLink;
+
 export function setSimDut(d: MockLink["dut"]) {
   set({ simDut: d });
-  if (link instanceof MockLink) link.dut = d;
+  if (isSimulatorLink(link)) link.dut = d;
+}
+
+export function setSimModel(m: State["simModel"]) {
+  const wasSim = isSimulator();
+  set({ simModel: m });
+  if (wasSim) void connectSimulator(); // reconnect with the new model
 }
 
 /* ------------------------------------------------------------------ device settings */
@@ -125,27 +173,30 @@ export async function applyDeviceSettings() {
   if (!vna) return;
   const s = get();
   try {
-    await vna.setAverage(s.ifAverage);
-    await vna.setPower({ hf: s.powerHf, lf: s.powerLf });
-    await vna.setChannels(s.channelsMode);
-    await vna.setDataMode(s.deviceCal ? DATA_MODE.DEVICE_CAL : DATA_MODE.USB);
+    const c = vna.capabilities;
+    if (c.ifAverage) await vna.setAverage?.(s.ifAverage);
+    if (c.power) await vna.setPower?.({ hf: s.powerHf, lf: s.powerLf });
+    if (c.channels) await vna.setChannels?.(s.channelsMode);
+    if (c.deviceCal) await vna.setDataMode?.(s.deviceCal ? DATA_MODE.DEVICE_CAL : DATA_MODE.USB);
+    // unsupported: just don't apply it; the persisted preference is kept for devices that have the capability
   } catch (e) { log(tr("Device settings: {0}", errMsg(e)), "error"); }
 }
 
-export async function setIfAverage(n: number) { set({ ifAverage: n }); if (vna) await vna.setAverage(n).catch((e) => log(errMsg(e), "error")); }
+export async function setIfAverage(n: number) { set({ ifAverage: n }); if (vna?.capabilities.ifAverage) await vna.setAverage?.(n).catch((e) => log(errMsg(e), "error")); }
 export async function setPower(p: { hf?: number; lf?: number }) {
   set({ ...(p.hf != null ? { powerHf: p.hf } : {}), ...(p.lf != null ? { powerLf: p.lf } : {}) });
-  if (vna) await vna.setPower(p).catch((e) => log(errMsg(e), "error"));
+  if (vna?.capabilities.power) await vna.setPower?.(p).catch((e) => log(errMsg(e), "error"));
 }
-export async function setChannelsMode(mode: number) { set({ channelsMode: mode }); if (vna) await vna.setChannels(mode).catch((e) => log(errMsg(e), "error")); }
+export async function setChannelsMode(mode: number) { set({ channelsMode: mode }); if (vna?.capabilities.channels) await vna.setChannels?.(mode).catch((e) => log(errMsg(e), "error")); }
 export async function setDeviceCal(on: boolean) {
+  if (on && vna && !vna.capabilities.deviceCal) { log(tr("This device can't deliver its own calibrated data."), "error"); return; }
   set({ deviceCal: on });
-  if (vna) await vna.setDataMode(on ? DATA_MODE.DEVICE_CAL : DATA_MODE.USB).catch((e) => log(errMsg(e), "error"));
+  if (vna?.capabilities.deviceCal) await vna.setDataMode?.(on ? DATA_MODE.DEVICE_CAL : DATA_MODE.USB).catch((e) => log(errMsg(e), "error"));
   log(on ? tr("Using the calibration stored in the device (data mode 3).") : tr("Using raw data (data mode 0)."));
 }
 
 export async function readVbat(quiet = false) {
-  if (!vna) return;
+  if (!vna?.capabilities.battery || !vna.readVbat) return;
   try {
     const v = await vna.readVbat();
     set({ vbat: v });
@@ -154,13 +205,13 @@ export async function readVbat(quiet = false) {
 }
 
 export async function syncClock() {
-  if (!vna) return;
+  if (!vna?.capabilities.clock || !vna.setTime) return;
   try { await vna.setTime(); log(tr("Device clock set to {0}.", new Date().toLocaleString())); }
   catch (e) { log(tr("Clock: {0}", errMsg(e)), "error"); }
 }
 
 export async function screenshot() {
-  if (!vna) return;
+  if (!vna?.capabilities.screenshot || !vna.screenshot) return;
   const wasRunning = get().continuous;
   if (wasRunning) stop();
   try {
@@ -188,18 +239,15 @@ async function acquire(): Promise<SweepPoint[]> {
   if (!vna) throw new Error(tr("Not connected."));
   const s = get();
   const n = Math.max(1, s.swAverage);
-  let acc: SweepPoint[] | null = null;
+  const sweeps: SweepPoint[][] = [];
   abort = new AbortController();
   for (let k = 0; k < n; k++) {
-    const d = await vna.sweepSegments(segments(), {
+    sweeps.push(await vna.sweepSegments(segments(), {
       signal: abort.signal,
       onProgress: (p) => set({ progress: (k + p) / n }),
-    }, 1024);
-    if (!acc) acc = d.map((p) => ({ f: p.f, s11: [...p.s11] as typeof p.s11, s21: [...p.s21] as typeof p.s21 }));
-    else for (let i = 0; i < d.length; i++) { acc[i].s11 = C.add(acc[i].s11, d[i].s11); acc[i].s21 = C.add(acc[i].s21, d[i].s21); }
+    }, 1024));
   }
-  if (n > 1) for (const p of acc!) { p.s11 = C.scale(p.s11, 1 / n); p.s21 = C.scale(p.s21, 1 / n); }
-  return acc!;
+  return n === 1 ? sweeps[0] : averageSweeps(sweeps, s.swDiscard);
 }
 
 async function sweepCycle() {
@@ -208,6 +256,7 @@ async function sweepCycle() {
   if (get().frozen) return;
   set((s) => ({ raw, sweepCount: s.sweepCount + 1, lastSweepMs: performance.now() - t0, progress: 1 }));
   recompute();
+  for (const cb of [...sweepListeners]) { try { cb(); } catch { /* listener errors must not break sweeping */ } }
   if (get().autoSave) await autoSaveSweep();
 }
 
@@ -248,8 +297,13 @@ export function restartIfRunning() {
 
 export function recompute() {
   const s = get();
-  const terms = s.calEnabled ? s.terms : null;
-  const data = s.raw.length ? applyCalibration(s.raw, terms, s.correction) : [];
+  let data: SweepPoint[];
+  try { data = processData(s.raw, s); }
+  catch (e) {
+    // an unusable fixture stage must not blank the display: show the data without fixture and say why
+    log(tr("Fixture: {0}", errMsg(e)), "error");
+    data = processData(s.raw, { ...s, fixture: NO_FIXTURE });
+  }
   set({ data });
   updateMarkers();
 }
@@ -267,7 +321,7 @@ export function updateMarkers() {
     if (m.tracking) {
       const t = s.traces[m.trace] ?? s.traces[0];
       const fmt = FORMAT_BY_ID[t.format].circular ? "logmag" : t.format;
-      const v = traceValues(d, t.channel, fmt);
+      const v = traceValues(d, t.channel, fmt, { core: s.core });
       // For left/right modes start one step "behind" so a marker already on a peak stays there.
       const cur = nearestIndex(d, f);
       const from = m.tracking.endsWith("left") ? Math.min(d.length - 1, cur + 1) : m.tracking.endsWith("right") ? Math.max(0, cur - 1) : cur;
@@ -280,6 +334,22 @@ export function updateMarkers() {
   if (changed) set({ markers });
 }
 
+/** Change gate settings and re-process the current sweep. */
+export function setGate(patch: Partial<GateSettings>) {
+  set((s) => ({ gate: { ...s.gate, ...patch } }));
+  recompute();
+}
+
+/** Centre the gate on the strongest time-domain response of the (ungated) calibrated data. */
+export function gateAroundPeak() {
+  const s = get();
+  const ch = s.gate.channel === "s21" ? "s21" : "s11";
+  const raw = processData(s.raw, { ...s, gate: { ...s.gate, enabled: false } });
+  const r = timeDomain(raw, ch, { ...s.tdr, mode: "bandpass", yAxis: "linear", window: "normal" });
+  if (!r) { log(tr("Sweep first: the time-domain transform needs data."), "error"); return; }
+  setGate({ center: r.time[strongestPeak(r)] });
+}
+
 /* ------------------------------------------------------------------ calibration */
 
 export async function measureStandard(std: Standard) {
@@ -287,10 +357,10 @@ export async function measureStandard(std: Standard) {
   const wasRunning = get().continuous;
   stop();
   while (get().running) await new Promise((r) => setTimeout(r, 20));
-  if (isSimulator()) (link as MockLink).dut = std === "isolation" ? "isolation" : std;
+  if (isSimulatorLink(link)) link.dut = std === "isolation" ? "isolation" : std;
   set({ running: true, progress: 0 });
   try {
-    if (get().deviceCal) await setDeviceCal(false);
+    if (get().deviceCal && vna.capabilities.deviceCal) await setDeviceCal(false);
     log(tr("Measuring {0}…", tr(std.toUpperCase())));
     const d = await acquire();
     const freqs = d.map((p) => p.f);
@@ -309,7 +379,7 @@ export async function measureStandard(std: Standard) {
   } catch (e) { if (!(e instanceof AbortError)) log(tr("Calibration sweep failed: {0}", errMsg(e)), "error"); }
   finally {
     set({ running: false });
-    if (isSimulator()) (link as MockLink).dut = get().simDut;
+    if (isSimulatorLink(link)) link.dut = get().simDut;
   }
   if (wasRunning) void startContinuous();
 }
@@ -345,6 +415,25 @@ export function restoreActiveCal() {
     set({ cal, terms: computeErrorTerms(cal) });
     log(tr("Restored calibration: {0}", cal.name));
   } catch { /* ignore */ }
+}
+
+/** Attach a measured Touchstone file (S11) as the data of an open/short/load standard. */
+export async function attachStandardFile(std: "open" | "short" | "load", file: File) {
+  try {
+    const sd = standardFromTouchstone(await file.text(), file.name);
+    set((s) => ({ kit: { ...s.kit, name: "Custom", data: { ...s.kit.data, [std]: sd } } }));
+    refreshCalTerms();
+    log(tr("{0} standard: {1} ({2} points).", tr(std.toUpperCase()), file.name, sd.freqs.length));
+  } catch (e) { log(tr("Import {0}: {1}", file.name, errMsg(e)), "error"); }
+}
+export function detachStandard(std: "open" | "short" | "load") {
+  set((s) => {
+    const kit = { ...s.kit, name: "Custom" }, data = { ...kit.data };
+    delete data[std];
+    if (Object.keys(data).length) kit.data = data; else delete kit.data;
+    return { kit };
+  });
+  refreshCalTerms();
 }
 
 export function clearCalWork() { set({ calWork: { freqs: null, meas: {}, thru11: null } }); }
@@ -389,6 +478,75 @@ export function loadCalSlot(name: string) {
 }
 export function deleteCalSlot(name: string) { try { localStorage.removeItem(CAL_PREFIX + name); } catch { /* ignore */ } }
 
+/* ------------------------------------------------------------------ fixture */
+
+/** Replace the fixture settings and re-process the current sweep. */
+export function setFixture(fixture: FixtureSettings) {
+  set({ fixture });
+  recompute();
+}
+
+/* ------------------------------------------------------------------ two-port by flipping the DUT */
+
+/** Simulator only: present the DUT reversed (port 1 sees DUT port 2). */
+export function setSimReversed(on: boolean) { if (isSimulatorLink(link)) link.reversed = on; }
+
+/** Acquire a RAW sweep of the DUT in one orientation (forward, or reversed after the user turned it around). */
+export async function measureFlip(dir: "fwd" | "rev") {
+  if (!vna) { log(tr("Connect a device (or the simulator) first."), "error"); return; }
+  stop();
+  while (get().running) await new Promise((r) => setTimeout(r, 20));
+  if (isSimulatorLink(link)) { link.dut = get().simDut; link.reversed = dir === "rev"; }
+  set({ running: true, progress: 0 });
+  try {
+    const d = await acquire();
+    set((s) => ({ twoPort: { ...s.twoPort, [dir]: d, result: null } }));
+    log(dir === "fwd" ? tr("Forward sweep measured ({0} points).", d.length) : tr("Reversed sweep measured ({0} points).", d.length));
+  } catch (e) { if (!(e instanceof AbortError)) log(tr("Sweep failed: {0}", errMsg(e)), "error"); }
+  finally {
+    if (isSimulatorLink(link)) link.reversed = false;
+    set({ running: false });
+  }
+}
+
+/** Combine the forward and reversed sweeps (cal + fixture applied) into full S-parameters. */
+export function buildFlip() {
+  const s = get();
+  const { fwd, rev } = s.twoPort;
+  if (!fwd || !rev) { log(tr("Measure both orientations first."), "error"); return; }
+  try {
+    const terms = s.calEnabled && !(s.deviceCal && s.capabilities?.deviceCal !== false) ? s.terms : null;
+    const result = applyFixture(combineFlip(fwd, rev, terms), s.fixture);
+    set({ twoPort: { fwd, rev, result } });
+    log(tr("Full 2-port S-parameters built ({0} points).", result.length));
+  } catch (e) { log(tr("2-port: {0}", errMsg(e)), "error"); }
+}
+
+/** Assume a symmetric reciprocal DUT: S12 = S21, S22 = S11 of the current (corrected) sweep. */
+export function fakeFlipCurrent() {
+  const d = get().data;
+  if (!d.length) { log(tr("Nothing to use yet: sweep first."), "error"); return; }
+  set((s) => ({ twoPort: { ...s.twoPort, result: fakeFlip(d) } }));
+  log(tr("Assumed a symmetric DUT: S12 = S21, S22 = S11."));
+}
+
+export function clearTwoPort() { set({ twoPort: { fwd: null, rev: null, result: null } }); }
+
+export function exportFull2Port(fmt: "RI" | "MA" | "DB" = "RI") {
+  const r = get().twoPort.result;
+  if (!r) { log(tr("Build the 2-port S-parameters first."), "error"); return; }
+  const name = `${get().autoSaveName || "webvna"}-2port-${stamp()}.s2p`;
+  download(name, writeTouchstone(r, 2, `WebVNA ${get().info?.model ?? ""} full 2-port (flip DUT)`, fmt));
+  log(tr("Saved {0}", name));
+}
+
+export function flipAsOverlay() {
+  const r = get().twoPort.result;
+  if (!r) { log(tr("Build the 2-port S-parameters first."), "error"); return; }
+  set((s) => ({ refs: [...s.refs, { name: "2-port", data: r, ports: 2, visible: true, color: TRACE_COLORS[(s.refs.length + 2) % 4] }] }));
+  log(tr("Added the 2-port result as an overlay (Display tab)."));
+}
+
 /* ------------------------------------------------------------------ memories and references */
 
 export function storeMemory(slot: MemorySlot) {
@@ -413,6 +571,21 @@ export async function importCalFile(file: File) {
     set({ kit: cal.kit, enhancedResponse: cal.enhancedResponse });
     setCalibration(cal);
     log(tr("Calibration loaded from {0}.", file.name));
+  } catch (e) { log(tr("Import {0}: {1}", file.name, errMsg(e)), "error"); }
+}
+
+/* ------------------------------------------------------------------ limits */
+
+export function exportLimits(trace: number) {
+  const segs = get().traces[trace]?.limits ?? [];
+  if (!segs.length) { log(tr("No limits to save."), "error"); return; }
+  download(`webvna-limits-TR${trace + 1}.json`, serializeLimits(segs), "application/json");
+}
+export async function importLimitsFile(trace: number, file: File) {
+  try {
+    const segs = parseLimits(await file.text());
+    updateTrace(trace, { limits: segs });
+    log(tr("Loaded {0}: {1} limit segments.", file.name, segs.length));
   } catch (e) { log(tr("Import {0}: {1}", file.name, errMsg(e)), "error"); }
 }
 

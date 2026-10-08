@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { translate, UK } from "./i18n";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { translate, DICTS, UK, type Lang } from "./i18n";
 
 const placeholders = (s: string) => (s.match(/\{\d+\}/g) ?? []).sort().join(",");
 
@@ -23,8 +25,48 @@ describe("translate", () => {
   it("falls back to English for missing keys", () => {
     expect(translate("uk", "Not a real key {0}", 7)).toBe("Not a real key 7");
   });
+});
 
-  it("keeps the same placeholders in every translation", () => {
-    for (const [k, v] of Object.entries(UK)) expect(placeholders(v), k).toBe(placeholders(k));
+const LANG_CODES = (Object.keys(DICTS) as Lang[]).filter((l) => l !== "en");
+
+describe.each(LANG_CODES)("dictionary %s", (lang) => {
+  const dict = DICTS[lang];
+  it("keeps the same placeholders as the key", () => {
+    for (const [k, v] of Object.entries(dict)) expect(placeholders(v), k).toBe(placeholders(k));
+  });
+  it("has no keys missing from UK", () => {
+    expect(Object.keys(dict).filter((k) => !(k in UK))).toEqual([]);
+  });
+});
+
+// Coverage: enabled only for dictionaries that have been started (non-empty).
+describe.each(LANG_CODES.filter((l) => l !== "uk" && Object.keys(DICTS[l]).length > 0))("coverage %s", (lang) => {
+  it("translates every UK key", () => {
+    expect(Object.keys(UK).filter((k) => !(k in DICTS[lang]))).toEqual([]);
+  });
+});
+
+function sources(dir: string, out: string[] = []): string[] {
+  for (const f of readdirSync(dir)) {
+    const p = join(dir, f);
+    if (statSync(p).isDirectory()) {
+      if (f !== "lib" && f !== "i18n") sources(p, out);
+    } else if (/\.tsx?$/.test(f) && !/\.test\.tsx?$/.test(f) && f !== "i18n.ts") out.push(p);
+  }
+  return out;
+}
+
+describe("UK covers the code", () => {
+  it("has every literal passed to t()/tr()", () => {
+    const re = /(?<![\w.$])tr?\(\s*(?:"((?:[^"\\\n]|\\.)*)"|'((?:[^'\\\n]|\\.)*)')/g;
+    const missing: string[] = [];
+    for (const f of sources(join(__dirname))) {
+      for (const m of readFileSync(f, "utf8").matchAll(re)) {
+        const lit = m[1] ?? m[2];
+        const key = JSON.parse(`"${m[1] !== undefined ? lit : lit.replace(/\\'/g, "'").replace(/"/g, '\\"')}"`) as string;
+        if (!(key in UK)) missing.push(`${f.slice(__dirname.length + 1)}: ${key}`);
+      }
+    }
+    expect(missing).toEqual([]);
   });
 });

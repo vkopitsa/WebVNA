@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import { C, type Complex } from "./complex";
 import { LiteVNA, planSegments, type SweepPoint } from "./litevna";
 import { MockLink, dutS } from "./mock";
+import { MockShellLink, type MockShellOptions } from "./mock-shell";
+import { NanoVNAShell, isForbiddenShellCommand } from "./nanovna";
+import { createDriver, detectProtocol } from "./detect";
 import { fifoChecksum, REG, DATA_MODE } from "./protocol";
 import { applyCalibration, computeErrorTerms, IDEAL_KIT, kitGamma, parseCal, serializeCal, solveSOLGeneral, type CalData, type CalKit } from "./calibration";
 import { formatValue, groupDelay, impedance, swr, traceValues } from "./formats";
@@ -244,5 +247,129 @@ describe("files and units", () => {
     expect(parseHz("1.2 GHz")).toBe(1.2e9);
     expect(parseHz("500k")).toBe(500e3);
     expect(si(1.5e-9, "H")).toBe("1.500 nH");
+  });
+});
+
+describe("NanoVNA V1/H shell driver (simulator)", () => {
+  async function shell(opts: MockShellOptions = {}) {
+    const link = new MockShellLink(opts), vna = new NanoVNAShell(link);
+    await vna.init();
+    return { link, vna };
+  }
+
+  it("identifies the H and the H4", async () => {
+    const h = await shell();
+    expect(h.vna.info?.model).toBe("NanoVNA-H");
+    expect(h.vna.info?.maxHz).toBe(900e6);
+    expect(h.vna.info?.fwMajor).toBe(1);
+    expect(h.vna.capabilities).toMatchObject({ protocol: "v1-shell", deviceCal: true, binaryScan: true, ifAverage: false, power: false });
+    const h4 = await shell({ board: "H4" });
+    expect(h4.vna.info?.model).toBe("NanoVNA-H4");
+    expect(h4.vna.info?.maxHz).toBe(1.5e9);
+    expect(h4.vna.capabilities.maxHz).toBe(1.5e9);
+  });
+  it("syncs past a power-on banner", async () => {
+    const { vna } = await shell({ banner: true });
+    expect(vna.info?.model).toBe("NanoVNA-H");
+  });
+  it("reads vbat and screenshots of the right size", async () => {
+    const h = await shell();
+    expect(await h.vna.readVbat()).toBe(4.012);
+    const s = await h.vna.screenshot();
+    expect([s.width, s.height]).toEqual([320, 240]);
+    expect(s.rgba.length).toBe(320 * 240 * 4);
+    const s4 = await (await shell({ board: "H4" })).vna.screenshot();
+    expect([s4.width, s4.height]).toEqual([480, 320]);
+  });
+  it("sweeps in binary mode with device calibration", async () => {
+    const { vna } = await shell();
+    await vna.setDataMode(DATA_MODE.DEVICE_CAL);
+    const d = await vna.sweep(S, E, 101);
+    expect(d.length).toBe(101);
+    expect(d[0].f).toBe(S);
+    expect(maxErr(d, "s11", "antenna")).toBeLessThan(0.01);
+    expect(maxErr(d, "s21", "antenna")).toBeLessThan(0.01);
+  });
+  it("falls back to ASCII when binary is unsupported", async () => {
+    for (const opts of [{ binary: false }, { firmware: "stock" }] as MockShellOptions[]) {
+      const { vna, link } = await shell(opts);
+      expect(vna.capabilities.binaryScan).toBe(false);
+      link.dut = "filter";
+      await vna.setDataMode(DATA_MODE.DEVICE_CAL);
+      const d = await vna.sweep(100e6, 200e6, 51);
+      expect(d.length).toBe(51);
+      if (opts.firmware === "stock") expect(maxErr(d, "s21", "filter")).toBeGreaterThan(0.05); // always raw
+      else expect(maxErr(d, "s21", "filter")).toBeLessThan(0.01);
+    }
+  });
+  it("returns raw data unless device calibration is on", async () => {
+    const { vna } = await shell();
+    await vna.setDataMode(DATA_MODE.USB);
+    expect(maxErr(await vna.sweep(S, E, 51), "s11", "antenna")).toBeGreaterThan(0.05);
+  });
+  it("does segmented sweeps in order", async () => {
+    for (const [opts, chunks] of [[{}, 3], [{ firmware: "stock" }, 10]] as [MockShellOptions, number][]) {
+      const { vna, link } = await shell(opts);
+      const before = link.commands.filter((c) => c.startsWith("scan")).length;
+      const prog: number[] = [];
+      const d = await vna.sweepSegments([{ start: 1e6, stop: 801e6, points: 1001 }], { onProgress: (p) => prog.push(p) });
+      expect(d.length).toBe(1001);
+      expect(d.every((p, i) => Math.abs(p.f - (1e6 + i * 0.8e6)) < 2)).toBe(true);
+      expect(link.commands.filter((c) => c.startsWith("scan")).length - before).toBe(chunks);
+      expect(prog.at(-1)).toBeCloseTo(1);
+    }
+  });
+  it("aborts and stays usable", async () => {
+    const { vna } = await shell();
+    const ac = new AbortController();
+    const p = vna.sweepSegments([{ start: S, stop: E, points: 401 }], { signal: ac.signal, onProgress: () => ac.abort() });
+    await expect(p).rejects.toMatchObject({ name: "AbortError" });
+    expect((await vna.sweep(S, E, 11)).length).toBe(11);
+  });
+  it("never sends forbidden commands", async () => {
+    for (const c of ["saveconfig", "save 1", "clearconfig 1234", "dfu", "reset", "cal load", "touchcal", "config", "scan 1 2\rsaveconfig"])
+      expect(isForbiddenShellCommand(c), c).toBe(true);
+    for (const c of ["", "info", "version", "vbat", "capture", "pause", "resume", "scan 1000000 2000000 11 0x7"])
+      expect(isForbiddenShellCommand(c), c).toBe(false);
+    const { vna, link } = await shell();
+    await vna.sweep(S, E, 11);
+    await vna.screenshot();
+    await expect((vna as unknown as { command(c: string): Promise<string[]> }).command("saveconfig")).rejects.toThrow(/Refusing/);
+    expect(link.forbidden).toBe(0);
+    expect(link.commands.some((c) => isForbiddenShellCommand(c))).toBe(false);
+  });
+  it("detects both protocols and builds the right driver", async () => {
+    expect(await detectProtocol(new MockLink())).toBe("v2");
+    expect(await detectProtocol(new MockShellLink())).toBe("v1-shell");
+    expect(await detectProtocol(new MockShellLink({ banner: true }))).toBe("v1-shell");
+    const a = await createDriver(new MockLink()), b = await createDriver(new MockShellLink());
+    expect(a).toBeInstanceOf(LiteVNA);
+    expect(b).toBeInstanceOf(NanoVNAShell);
+    expect((await a.init()).model).toBe("LiteVNA");
+    expect((await b.init()).model).toBe("NanoVNA-H");
+    expect(a.capabilities.protocol).toBe("v2");
+  });
+  it("resumes the device screen at session end", async () => {
+    const { vna, link } = await shell();
+    expect(link.paused).toBe(true);
+    await vna.exitUsbMode();
+    expect(link.paused).toBe(false);
+    expect(link.commands.at(-1)).toBe("resume");
+  });
+});
+
+describe("LiteVNA register clamping", () => {
+  it("setPower/setChannels clamp to the valid register ranges", async () => {
+    const link = new MockLink(), vna = new LiteVNA(link);
+    await vna.init();
+    await vna.setPower({ hf: 200, lf: -5 });
+    expect(link.reg[REG.POWER_HF]).toBe(3);
+    expect(link.reg[REG.POWER_LF]).toBe(0);
+    await vna.setChannels(7);
+    expect(link.reg[REG.CHANNELS]).toBe(2);
+    await vna.setChannels(NaN);
+    expect(link.reg[REG.CHANNELS]).toBe(0);
+    await vna.setPower({ hf: 3, lf: 1 });
+    await vna.setChannels(0);
   });
 });

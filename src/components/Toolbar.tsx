@@ -1,5 +1,5 @@
 import { useStore } from "../store";
-import { connectSerial, connectSimulator, connectUsb, disconnect, hasWebSerial, hasWebUsb, startContinuous, stop, sweepOnce } from "../controller";
+import { connectBluetooth, connectSerial, connectSimulator, connectUsb, disconnect, hasWebSerial, hasWebUsb, startContinuous, stop, sweepOnce } from "../controller";
 import { calCovers } from "../lib/calibration";
 import { useEffect, useState } from "react";
 import { useT } from "../i18n";
@@ -16,6 +16,7 @@ export function Toolbar({ onMenu, menuOpen }: { onMenu: () => void; menuOpen: bo
   const calEnabled = useStore((s) => s.calEnabled);
   const deviceCal = useStore((s) => s.deviceCal);
   const vbat = useStore((s) => s.vbat);
+  const caps = useStore((s) => s.capabilities);
   const start = useStore((s) => s.start), stopHz = useStore((s) => s.stop);
   const lastSweepMs = useStore((s) => s.lastSweepMs);
   const points = useStore((s) => s.points);
@@ -40,7 +41,7 @@ export function Toolbar({ onMenu, menuOpen }: { onMenu: () => void; menuOpen: bo
   }, [connected, continuous]);
 
   let calBadge = <span className="badge warn">{t("Raw")}</span>;
-  if (deviceCal) calBadge = <span className="badge ok">{t("Device cal")}</span>;
+  if (deviceCal && caps?.deviceCal !== false) calBadge = <span className="badge ok">{t("Device cal")}</span>;
   else if (cal && calEnabled) calBadge = calCovers(cal, start, stopHz)
     ? <span className="badge ok" title={cal.name}>{t("Calibrated")}</span>
     : <span className="badge warn" title={t("The sweep extends outside the calibrated range; edge terms are extrapolated.")}>{t("Cal (out of range)")}</span>;
@@ -53,13 +54,14 @@ export function Toolbar({ onMenu, menuOpen }: { onMenu: () => void; menuOpen: bo
       {!connected ? (
         <>
           <button className="primary" disabled={status === "connecting" || !hasWebSerial()} onClick={() => connectSerial()} title={hasWebSerial() ? "" : t("Web Serial needs Chrome or Edge")}>{t("Connect")}</button>
-          {hasWebUsb() && <button disabled={status === "connecting"} onClick={() => connectUsb()}>WebUSB</button>}
+          {hasWebSerial() && <button disabled={status === "connecting"} onClick={() => connectBluetooth()} title={t("Bluetooth serial module (Chrome on Android, experimental)")}>Bluetooth</button>}
+          {hasWebUsb() && <button disabled={status === "connecting"} title={t("WebUSB: LiteVNA / NanoVNA V2 over USB serial, or LibreVNA (experimental)")} onClick={() => connectUsb()}>WebUSB</button>}
           <button disabled={status === "connecting"} onClick={() => connectSimulator()}>{t("Simulator")}</button>
         </>
       ) : (
         <button onClick={() => disconnect()}>{t("Disconnect")}</button>
       )}
-      {connected && info && <span className="hint device-info">{info.model} · {t("fw {0}.{1}", info.fwMajor, info.fwMinor)} · {linkKind}{vbat != null ? ` · ${vbat.toFixed(2)} V` : ""}</span>}
+      {connected && info && <span className="hint device-info">{info.model} · {caps?.protocol !== "v2" ? `${t("fw {0}", info.firmware ?? "?")} · ${t("experimental")}` : t("fw {0}.{1}", info.fwMajor, info.fwMinor)} · {t(linkKind)}{vbat != null ? ` · ${vbat.toFixed(2)} V` : ""}</span>}
       {status === "connecting" && <span className="hint">{t("Connecting…")}</span>}
       <span className="spacer" />
       {calBadge}

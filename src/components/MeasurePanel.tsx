@@ -1,8 +1,10 @@
 import { useMemo } from "react";
+import { traceData, valueText, limitReports } from "../display";
+import { traceStats } from "../lib/stats";
 import { useStore, set, type MeasureMode } from "../store";
 import { Num, Section, Select } from "./inputs";
 import { cableAnalysis, crystalAnalysis, filterAnalysis, lcMatch, lcResonator, nearestIndex, resonances, swrBandwidth } from "../lib/analysis";
-import { impedance, swr } from "../lib/formats";
+import { FORMAT_BY_ID, impedance, swr, traceValues } from "../lib/formats";
 import { C } from "../lib/complex";
 import { fmtHz, si } from "../lib/units";
 import { useT, translate, type Lang } from "../i18n";
@@ -16,6 +18,7 @@ const MODES: [MeasureMode, string, string][] = [
   ["serieslc", "Series LC (S21)", "Series LC in the through path between the ports: resonance, R, L, C, Q."],
   ["shuntlc", "Shunt LC (S21)", "Series LC from the through line to ground: notch frequency, R, L, C, Q."],
   ["xtal", "Series crystal (S21)", "Crystal in series between the ports: fs, fp, motional Rm, Lm, Cm, holder Cp, Q."],
+  ["stats", "Statistics", "Min, max, mean, deviation, peak-to-peak, slope and flatness of the active trace between markers 1 and 2 (the whole sweep when fewer than two of them are on)."],
 ];
 
 export function MeasurePanel() {
@@ -42,12 +45,23 @@ export function AnalysisBox() {
   const markers = useStore((s) => s.markers);
   const activeMarker = useStore((s) => s.activeMarker);
   const lang = useStore((s) => s.lang);
+  const traces = useStore((s) => s.traces);
+  const activeTrace = useStore((s) => s.activeTrace);
+  const memories = useStore((s) => s.memories);
+  const core = useStore((s) => s.core);
+  const tdrOn = useStore((s) => s.tdr.enabled);
   const t = useT();
   const mf = markers[activeMarker]?.f ?? 0;
 
   const content = useMemo(() => {
     const tr = (s: string, ...a: (string | number)[]) => translate(lang as Lang, s, ...a);
     if (!data.length) return <p className="hint">{tr("No data yet.")}</p>;
+    const reports = tdrOn ? [] : limitReports({ data, memories, core, traces });
+    const limits = reports.length > 0 && (
+      <div className="kv" style={{ marginBottom: 8 }}>
+        {reports.map((r) => <span key={r.index} style={{ gridColumn: "1 / -1", fontWeight: 600, color: r.status === "pass" ? "var(--ok)" : r.status === "fail" ? "var(--err)" : "var(--warn)" }}>{r.text}</span>)}
+      </div>
+    );
     const band = swrBandwidth(data);
     const best = band ? data[band.best] : null;
     const zb = best ? impedance(best.s11, "s11") : null;
@@ -116,6 +130,30 @@ export function AnalysisBox() {
           <span>{tr("BW −3 dB")}</span><span>{si(r.bw, "Hz")}</span>
         </div>
       ) : <p className="hint">{tr("The −3 dB points must be inside the sweep.")}</p>;
+    } else if (mode === "stats") {
+      const tc = traces[activeTrace];
+      if (!tc || FORMAT_BY_ID[tc.format].circular) extra = <p className="hint">{tr("Select a rectangular trace (not Smith/polar).")}</p>;
+      else {
+        const d = traceData({ data, memories, core }, tc);
+        const v = traceValues(d, tc.channel, tc.format, { core });
+        const two = markers[0].enabled && markers[1].enabled;
+        const i0 = two ? nearestIndex(d, markers[0].f) : 0, i1 = two ? nearestIndex(d, markers[1].f) : d.length - 1;
+        const st = traceStats(d.map((p) => p.f), v, i0, i1);
+        const vt = (x: number) => valueText(tc.format, x);
+        extra = st ? (
+          <div className="kv">
+            <span>{tr("Range")}</span><span>{two ? `M1–M2: ` : ""}{fmtHz(d[Math.min(i0, i1)].f)} – {fmtHz(d[Math.max(i0, i1)].f)}</span>
+            <span>{tr("Points")}</span><span>{st.n}</span>
+            <span>{tr("Minimum")}</span><span>{vt(st.min)} @ {fmtHz(st.fMin)}</span>
+            <span>{tr("Maximum")}</span><span>{vt(st.max)} @ {fmtHz(st.fMax)}</span>
+            <span>{tr("Mean")}</span><span>{vt(st.mean)}</span>
+            <span>{tr("Std deviation")}</span><span>{vt(st.std)}</span>
+            <span>{tr("Peak-to-peak")}</span><span>{vt(st.peakToPeak)}</span>
+            <span>{tr("Slope")}</span><span>{Number.isNaN(st.slope) ? "—" : `${vt(st.slope * 1e6)}/MHz`}</span>
+            <span>{tr("Flatness")}</span><span>{vt(st.flatness)}</span>
+          </div>
+        ) : <p className="hint">{tr("No finite values in the range.")}</p>;
+      }
     } else if (mode === "xtal") {
       const r = crystalAnalysis(data);
       extra = r ? (
@@ -130,8 +168,8 @@ export function AnalysisBox() {
         </div>
       ) : <p className="hint">{tr("Sweep narrowly around the series resonance (the −3 dB points must be inside the sweep).")}</p>;
     }
-    return <>{summary}{extra}</>;
-  }, [data, mode, vf, mf, activeMarker, lang]);
+    return <>{limits}{summary}{extra}</>;
+  }, [data, mode, vf, mf, activeMarker, lang, traces, activeTrace, memories, core, tdrOn, markers]);
 
   return (
     <div className="box">

@@ -2,7 +2,7 @@ import { useRef } from "react";
 import { useStore, updateMarker, set } from "../store";
 import { useCanvas } from "../hooks/useCanvas";
 import { cssVar, traceData, zText, SMITH_READOUTS, type SmithReadout } from "../display";
-import { FORMAT_BY_ID } from "../lib/formats";
+import { FORMAT_BY_ID, channelValue } from "../lib/formats";
 import { C, type Complex } from "../lib/complex";
 import { fmtHz } from "../lib/units";
 import { nearestIndex } from "../lib/analysis";
@@ -90,9 +90,9 @@ export function SmithChart() {
     };
     for (const { t, i } of circ) {
       const d = traceData(s, t);
-      if (t.memory && t.math === "off" && memories[t.memory]) drawPath(memories[t.memory]!.map((p) => p[t.channel]), t.color, true);
-      if (i === activeTrace) for (const ref of refs) if (ref.visible && (t.channel === "s11" || ref.ports === 2)) drawPath(ref.data.map((p) => p[t.channel]), ref.color, true);
-      if (d.length) drawPath(d.map((p) => p[t.channel]), t.color, false);
+      if (t.memory && t.math === "off" && memories[t.memory]) drawPath(memories[t.memory]!.map((p) => channelValue(p, t.channel)), t.color, true);
+      if (i === activeTrace) for (const ref of refs) if (ref.visible && (t.channel === "s11" || ref.ports === 2)) drawPath(ref.data.map((p) => channelValue(p, t.channel)), ref.color, true);
+      if (d.length) drawPath(d.map((p) => channelValue(p, t.channel)), t.color, false);
     }
     // markers
     const lines: { text: string; color: string }[] = [];
@@ -102,7 +102,7 @@ export function SmithChart() {
         const d = traceData(s, t);
         if (!d.length) continue;
         const idx = nearestIndex(d, m.f);
-        const [x, y] = P(d[idx][t.channel]);
+        const [x, y] = P(channelValue(d[idx], t.channel));
         const act = mi === activeMarker;
         ctx.fillStyle = act ? t.color : cssVar("--chart-bg"); ctx.strokeStyle = t.color; ctx.lineWidth = 1.2;
         ctx.beginPath(); ctx.arc(x, y, act ? 5 : 4, 0, 2 * Math.PI); ctx.fill(); ctx.stroke();
@@ -129,7 +129,7 @@ export function SmithChart() {
     if (!t || !data.length) return;
     const d = traceData(s, t);
     let best = 0, bd = Infinity;
-    for (let i = 0; i < d.length; i++) { const dd = C.abs2(C.sub(d[i][t.channel], g)); if (dd < bd) { bd = dd; best = i; } }
+    for (let i = 0; i < d.length; i++) { const dd = C.abs2(C.sub(channelValue(d[i], t.channel), g)); if (dd < bd) { bd = dd; best = i; } }
     updateMarker(activeMarker, { f: d[best].f, enabled: true, tracking: null });
   };
 
@@ -148,6 +148,7 @@ export function SmithChart() {
         onPointerDown={(e) => { (e.target as HTMLElement).setPointerCapture(e.pointerId); drag.current = true; pick(e); }}
         onPointerMove={(e) => { if (drag.current) pick(e); }}
         onPointerUp={() => { drag.current = false; }}
+        onPointerCancel={() => { drag.current = false; }}
         aria-label={tl("Smith chart. Click or drag to move the active marker.")} />
     </div>
   );

@@ -2,12 +2,16 @@
 import { C, type Complex } from "./complex";
 import { DATA_MODE, OP, REG, fifoChecksum } from "./protocol";
 import { LinkBase } from "./links";
+import { cascade, seriesR, shuntC } from "./deembed";
 
-export type Dut = "antenna" | "open" | "short" | "load" | "thru" | "isolation" | "filter" | "crystal" | "cable" | "rlc";
-export const DUTS: Dut[] = ["antenna", "filter", "crystal", "cable", "rlc", "open", "short", "load", "thru", "isolation"];
+export type Dut = "antenna" | "open" | "short" | "load" | "thru" | "isolation" | "filter" | "crystal" | "cable" | "rlc" | "pad";
+export const DUTS: Dut[] = ["antenna", "filter", "crystal", "cable", "rlc", "pad", "open", "short", "load", "thru", "isolation"];
 
 const Z0 = 50;
 const gammaOf = (z: Complex): Complex => C.div(C.sub(z, [Z0, 0]), C.add(z, [Z0, 0]));
+
+/** Asymmetric reciprocal 2-port ("pad"): series 20 Ω followed by a 3 pF shunt (port 1 on the series side). [S11, S12, S21, S22]. */
+const padS = (f: number) => cascade(seriesR(20, f), shuntC(3e-12, f));
 
 /** True S11/S21 of the simulated device under test. */
 export function dutS(dut: Dut, f: number): { s11: Complex; s21: Complex } {
@@ -39,6 +43,7 @@ export function dutS(dut: Dut, f: number): { s11: Complex; s21: Complex } {
       const t = (2 * w * len) / (3e8 * vf);
       return { s11: C.polar(Math.pow(10, (-2 * loss) / 20), -t), s21: C.polar(Math.pow(10, -loss / 20), -t / 2) };
     }
+    case "pad": { const [s11, , s21] = padS(f); return { s11, s21 }; }
     case "rlc": {
       // 33 Ω + 120 nH + 47 pF series to ground.
       const z: Complex = [33, w * 120e-9 - 1 / (w * 47e-12)];
@@ -51,10 +56,19 @@ export function dutS(dut: Dut, f: number): { s11: Complex; s21: Complex } {
   }
 }
 
+/** All four true S-parameters; DUTs without a 2-port model are treated as symmetric (S12 = S21, S22 = S11). */
+export function dutS4(dut: Dut, f: number): { s11: Complex; s21: Complex; s12: Complex; s22: Complex } {
+  if (dut === "pad") { const [s11, s12, s21, s22] = padS(f); return { s11, s21, s12, s22 }; }
+  const { s11, s21 } = dutS(dut, f);
+  return { s11, s21, s12: s21, s22: s11 };
+}
+
 export class MockLink extends LinkBase {
   kind = "Simulator";
   reg = new Uint8Array(256);
   dut: Dut = "antenna";
+  /** DUT physically flipped: port 1 sees DUT port 2 (S22 / S12), as after turning the DUT around. */
+  reversed = false;
   noise = 30;
   private inbox: number[] = [];
   private idx = 0;
@@ -77,7 +91,8 @@ export class MockLink extends LinkBase {
   private sample(i: number): Uint8Array {
     const f = this.u(REG.SWEEP_START, 8) + i * this.u(REG.SWEEP_STEP, 8);
     const ph = -2 * Math.PI * f * 1.2e-9;
-    const { s11: G, s21: S } = dutS(this.dut, f);
+    const t4 = dutS4(this.dut, f);
+    const G = this.reversed ? t4.s22 : t4.s11, S = this.reversed ? t4.s12 : t4.s21;
     const deviceCal = this.reg[REG.DATA_MODE] === DATA_MODE.DEVICE_CAL;
     let m: Complex, s21: Complex;
     if (deviceCal) { m = G; s21 = S; }
@@ -85,7 +100,9 @@ export class MockLink extends LinkBase {
       const e00 = C.polar(0.06, ph * 0.3 + 1), e11 = C.polar(0.08, ph * 0.5), T = C.polar(0.85, ph);
       m = C.add(e00, C.div(C.mul(T, G), C.sub([1, 0], C.mul(e11, G))));
       const thru = C.polar(0.7, ph * 1.4), leak = C.polar(0.001, ph);
-      s21 = C.add(C.mul(thru, S), leak);
+      // the pad is a physical 2-port: the source-match error re-reflects off its input (S21/(1 − e11·S11)); other DUTs keep the simple model
+      const Sx = this.dut === "pad" ? C.div(S, C.sub([1, 0], C.mul(e11, G))) : S;
+      s21 = C.add(C.mul(thru, Sx), leak);
     }
     const pw = [0.5, 0.7, 0.85, 1][Math.min(3, this.reg[REG.POWER_HF])];
     const fwd = C.polar(2e5 * pw, ph * 2 + 0.4);

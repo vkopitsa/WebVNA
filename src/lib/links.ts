@@ -139,3 +139,51 @@ export class UsbLink extends LinkBase {
   protected async write(bytes: Uint8Array): Promise<void> { await this.dev.transferOut(this.epOut, bytes as BufferSource); }
   async close(): Promise<void> { this.closed = true; try { await this.dev.close(); } catch { /* ignore */ } }
 }
+
+/**
+ * WebUSB — vendor-specific interface with bulk endpoints (LibreVNA: EP 0x01 OUT data, 0x81 IN data, 0x82 IN firmware log).
+ * The first bulk-IN endpoint carries data; an optional second one is the log and goes to `onLog`.
+ */
+export class WebUsbBulkLink extends LinkBase {
+  kind = "WebUSB";
+  /** Optional sink for the log endpoint (text from the firmware). */
+  onLog: ((bytes: Uint8Array) => void) | null = null;
+  private dev!: USBDevice;
+  private epOut = 1;
+  private itf = -1;
+
+  async open(dev: USBDevice): Promise<void> {
+    this.dev = dev;
+    await dev.open();
+    if (!dev.configuration) await dev.selectConfiguration(1);
+    const found = dev.configuration!.interfaces.find((i) => {
+      const a = i.alternates[0];
+      return a.interfaceClass === 0xff && a.endpoints.some((e) => e.type === "bulk" && e.direction === "in") && a.endpoints.some((e) => e.type === "bulk" && e.direction === "out");
+    });
+    if (!found) throw new Error("This device has no vendor-specific USB bulk interface.");
+    try { await dev.claimInterface(found.interfaceNumber); }
+    catch { throw new Error("WebUSB couldn't claim the device: another program or driver owns it."); }
+    this.itf = found.interfaceNumber;
+    const eps = found.alternates[0].endpoints.filter((e) => e.type === "bulk");
+    const ins = eps.filter((e) => e.direction === "in").map((e) => e.endpointNumber).sort((a, b) => a - b);
+    this.epOut = eps.find((e) => e.direction === "out")!.endpointNumber;
+    const pump = async (ep: number, sink: (b: Uint8Array) => void) => {
+      while (!this.closed) {
+        try {
+          const r = await dev.transferIn(ep, 4096);
+          if (r.data && r.data.byteLength) sink(new Uint8Array(r.data.buffer, r.data.byteOffset, r.data.byteLength));
+        } catch { break; }
+      }
+      this.markClosed();
+    };
+    void pump(ins[0], (b) => this.push(b));
+    if (ins[1] !== undefined) void pump(ins[1], (b) => this.onLog?.(b));
+  }
+
+  protected async write(bytes: Uint8Array): Promise<void> { await this.dev.transferOut(this.epOut, bytes as BufferSource); }
+  async close(): Promise<void> {
+    this.closed = true;
+    try { await this.dev.releaseInterface(this.itf); } catch { /* ignore */ }
+    try { await this.dev.close(); } catch { /* ignore */ }
+  }
+}

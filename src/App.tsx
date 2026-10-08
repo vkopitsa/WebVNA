@@ -8,11 +8,14 @@ import { MarkersPanel } from "./components/MarkersPanel";
 import { MeasurePanel, AnalysisBox } from "./components/MeasurePanel";
 import { DevicePanel } from "./components/DevicePanel";
 import { FilesPanel } from "./components/FilesPanel";
+import { ScriptPanel } from "./components/ScriptPanel";
 import { RectChart } from "./components/RectChart";
 import { SmithChart } from "./components/SmithChart";
 import { MarkerTable } from "./components/MarkerTable";
 import { LogPanel } from "./components/LogPanel";
+import { UpdatePrompt } from "./components/UpdatePrompt";
 import { useT, tr } from "./i18n";
+import { loadSharedFromHash } from "./session";
 import { disconnect, hasWebSerial, reconnectKnown, restoreActiveCal, updateMarkers } from "./controller";
 
 const TABS = [
@@ -23,6 +26,7 @@ const TABS = [
   ["measure", "Measure", MeasurePanel],
   ["device", "Device", DevicePanel],
   ["files", "Files", FilesPanel],
+  ["script", "Script", ScriptPanel],
 ] as const;
 
 let booted = false;
@@ -42,7 +46,8 @@ export default function App() {
     booted = true;
     restoreActiveCal();
     if (!hasWebSerial()) log(tr("Web Serial isn't available here. Use Chrome or Edge on desktop (https or localhost). The simulator still works."), "error");
-    else void reconnectKnown();
+    else if (!location.hash.startsWith("#s=")) void reconnectKnown();
+    void loadSharedFromHash();
     const bye = () => { void disconnect(); };
     window.addEventListener("beforeunload", bye);
   }, []);
@@ -80,6 +85,7 @@ export default function App() {
           </div>
         </main>
       </div>
+      <UpdatePrompt />
     </div>
   );
 }

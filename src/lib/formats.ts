@@ -2,12 +2,19 @@
 import { C, type Complex } from "./complex";
 import type { SweepPoint } from "./litevna";
 import { Z0 } from "./calibration";
+import { DEFAULT_CORE, permeability, type CoreParams } from "./permeability";
 
-export type Channel = "s11" | "s21";
+export type Channel = "s11" | "s21" | "s12" | "s22";
+
+/** Reflection channels (S11, S22) are interpreted as impedances; transmission channels as series-through fixtures. */
+export const isReflection = (ch: Channel) => ch === "s11" || ch === "s22";
+
+/** S-parameter of a point for a channel; NaN pair when the data lacks it (S12/S22 on one-path sweeps). */
+export const channelValue = (p: SweepPoint, ch: Channel): Complex => p[ch] ?? [NaN, NaN];
 
 export type FormatId =
   | "logmag" | "phase" | "uphase" | "delay" | "smith" | "polar" | "swr" | "linear" | "real" | "imag"
-  | "r" | "x" | "absz" | "zphase" | "q" | "l" | "c" | "rp" | "xp" | "lp" | "cp" | "g" | "b" | "absy"
+  | "r" | "x" | "rw" | "xw" | "absz" | "zphase" | "q" | "l" | "c" | "mu_r" | "mu_i" | "rp" | "xp" | "lp" | "cp" | "g" | "b" | "absy"
   | "rl" | "mismatch" | "s21gain";
 
 export interface FormatDef {
@@ -36,11 +43,15 @@ export const FORMATS: FormatDef[] = [
   { id: "imag", label: "IMAG", unit: "", perDiv: 0.25, ref: 0, refPos: 4 },
   { id: "r", label: "RESISTANCE", unit: "Ω", perDiv: 25, ref: 0, refPos: 0, impedance: true },
   { id: "x", label: "REACTANCE", unit: "Ω", perDiv: 25, ref: 0, refPos: 4, impedance: true },
+  { id: "rw", label: "R/ω", unit: "Ω·s", perDiv: 1e-8, ref: 0, refPos: 0, impedance: true },
+  { id: "xw", label: "X/ω", unit: "H", perDiv: 1e-8, ref: 0, refPos: 4, impedance: true },
   { id: "absz", label: "|Z|", unit: "Ω", perDiv: 25, ref: 0, refPos: 0, impedance: true },
   { id: "zphase", label: "Z PHASE", unit: "°", perDiv: 22.5, ref: 0, refPos: 4, impedance: true },
   { id: "q", label: "Q FACTOR", unit: "", perDiv: 5, ref: 0, refPos: 0, impedance: true },
   { id: "l", label: "SERIES L", unit: "H", perDiv: 1e-8, ref: 0, refPos: 4, impedance: true },
   { id: "c", label: "SERIES C", unit: "F", perDiv: 1e-11, ref: 0, refPos: 4, impedance: true },
+  { id: "mu_r", label: "µ′", unit: "", perDiv: 50, ref: 0, refPos: 0, impedance: true },
+  { id: "mu_i", label: "µ″", unit: "", perDiv: 50, ref: 0, refPos: 0, impedance: true },
   { id: "rp", label: "PARALLEL R", unit: "Ω", perDiv: 50, ref: 0, refPos: 0, impedance: true },
   { id: "xp", label: "PARALLEL X", unit: "Ω", perDiv: 50, ref: 0, refPos: 4, impedance: true },
   { id: "lp", label: "PARALLEL L", unit: "H", perDiv: 1e-8, ref: 0, refPos: 4, impedance: true },
@@ -59,7 +70,7 @@ export const FORMAT_BY_ID = Object.fromEntries(FORMATS.map((f) => [f.id, f])) as
  * Impedance seen by the VNA. S11: Z = Z0(1+Γ)/(1−Γ). S21: series-through fixture Z = 2·Z0·(1−S21)/S21.
  */
 export function impedance(s: Complex, ch: Channel, z0 = Z0): Complex {
-  if (ch === "s11") return C.scale(C.div(C.add([1, 0], s), C.sub([1, 0], s)), z0);
+  if (isReflection(ch)) return C.scale(C.div(C.add([1, 0], s), C.sub([1, 0], s)), z0);
   return C.scale(C.div(C.sub([1, 0], s), s), 2 * z0);
 }
 
@@ -76,7 +87,7 @@ export function unwrap(ph: number[]): number[] {
 
 /** Group delay in seconds, central difference of unwrapped phase (same as src/core.js). */
 export function groupDelay(data: SweepPoint[], key: Channel = "s21"): number[] {
-  const ph = unwrap(data.map((p) => C.arg(p[key])));
+  const ph = unwrap(data.map((p) => C.arg(channelValue(p, key))));
   return data.map((_, i) => {
     const a = Math.max(0, i - 1), b = Math.min(data.length - 1, i + 1);
     return -(ph[b] - ph[a]) / (2 * Math.PI * (data[b].f - data[a].f || 1));
@@ -89,8 +100,10 @@ export function swr(g: Complex): number {
   return m >= 1 ? Infinity : (1 + m) / (1 - m);
 }
 
+export interface FormatOptions { core?: CoreParams }
+
 /** Scalar value of one point in a rectangular format. */
-export function formatValue(fmt: FormatId, s: Complex, f: number, ch: Channel): number {
+export function formatValue(fmt: FormatId, s: Complex, f: number, ch: Channel, opts?: FormatOptions): number {
   const w = 2 * Math.PI * f;
   const mag = C.abs(s);
   switch (fmt) {
@@ -108,6 +121,10 @@ export function formatValue(fmt: FormatId, s: Complex, f: number, ch: Channel): 
   switch (fmt) {
     case "r": return z[0];
     case "x": return z[1];
+    case "rw": return z[0] / w;
+    case "xw": return z[1] / w;
+    case "mu_r": return permeability(z, f, opts?.core ?? DEFAULT_CORE).mu1;
+    case "mu_i": return permeability(z, f, opts?.core ?? DEFAULT_CORE).mu2;
     case "absz": return C.abs(z);
     case "zphase": return (C.arg(z) * 180) / Math.PI;
     case "q": return Math.abs(z[1]) / Math.max(Math.abs(z[0]), 1e-12);
@@ -125,11 +142,11 @@ export function formatValue(fmt: FormatId, s: Complex, f: number, ch: Channel): 
 }
 
 /** Values of a whole trace (handles formats that need the whole sweep: delay, unwrapped phase). */
-export function traceValues(data: SweepPoint[], ch: Channel, fmt: FormatId): Float64Array {
+export function traceValues(data: SweepPoint[], ch: Channel, fmt: FormatId, opts?: FormatOptions): Float64Array {
   const out = new Float64Array(data.length);
   if (fmt === "delay") { groupDelay(data, ch).forEach((v, i) => (out[i] = v)); return out; }
-  if (fmt === "uphase") { unwrap(data.map((p) => C.arg(p[ch]))).forEach((v, i) => (out[i] = (v * 180) / Math.PI)); return out; }
-  for (let i = 0; i < data.length; i++) out[i] = formatValue(fmt, data[i][ch], data[i].f, ch);
+  if (fmt === "uphase") { unwrap(data.map((p) => C.arg(channelValue(p, ch)))).forEach((v, i) => (out[i] = (v * 180) / Math.PI)); return out; }
+  for (let i = 0; i < data.length; i++) out[i] = formatValue(fmt, channelValue(data[i], ch), data[i].f, ch, opts);
   return out;
 }
 
