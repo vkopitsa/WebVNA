@@ -2,12 +2,14 @@ import { useState } from "react";
 import { useStore, set } from "../store";
 import {
   measureStandard, finishCalibration, resetCalibration, clearCalWork, refreshCalTerms, stimulusFromCal, listCalSlots, saveCalSlot,
-  loadCalSlot, deleteCalSlot, exportCal, importCalFile, setDeviceCal, recompute,
+  loadCalSlot, deleteCalSlot, exportCal, importCalFile, setDeviceCal, recompute, attachStandardFile, detachStandard,
 } from "../controller";
 import { calCovers, calSummary, IDEAL_KIT, SMA_KIT, type CalKit, type Standard } from "../lib/calibration";
 import { Check, Num, Section, Field, SIInput } from "./inputs";
 import { SPEED_OF_LIGHT, si } from "../lib/units";
 import { useT } from "../i18n";
+import { FixtureSection } from "./FixtureSection";
+import { TwoPortSection } from "./TwoPortSection";
 
 const STD_LABEL: Record<Standard, string> = { open: "OPEN", short: "SHORT", load: "LOAD", isolation: "ISOLATION", thru: "THRU" };
 const STD_HINT: Record<Standard, string> = {
@@ -58,7 +60,7 @@ export function CalibrationPanel() {
           <Check checked={s.calEnabled} onChange={(v) => { set({ calEnabled: v }); recompute(); }}>{t("Apply calibration")}</Check>
           <button className="small" disabled={!s.cal} onClick={() => stimulusFromCal()}>{t("Cal range → sweep")}</button>
         </div>
-        <Check checked={s.deviceCal} onChange={(v) => void setDeviceCal(v)}>{t("Use device's own calibration (data mode 3)")}</Check>
+        {(!s.capabilities || s.capabilities.deviceCal) && <Check checked={s.deviceCal} onChange={(v) => void setDeviceCal(v)}>{t("Use device's own calibration (data mode 3)")}</Check>}
       </Section>
 
       <Section title="Save / recall">
@@ -103,6 +105,27 @@ export function CalibrationPanel() {
           <Field label="Load delay (ps)"><Num value={s.kit.load.delayPs} onChange={(v) => kitPatch((k) => ({ ...k, name: "Custom", load: { ...k.load, delayPs: v } }))} /></Field>
           <Field label="Thru delay (ps)"><Num value={s.kit.thru.delayPs} onChange={(v) => kitPatch((k) => ({ ...k, name: "Custom", thru: { delayPs: v } }))} /></Field>
         </div>
+        <div className="grid3">
+          {(["open", "short", "load"] as const).map((std) => {
+            const d = s.kit.data?.[std];
+            return (
+              <div key={std} style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                {d ? (
+                  <span className="row" style={{ margin: 0 }}>
+                    <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", fontSize: 12 }} title={d.name}>{t(STD_LABEL[std])}: {d.name}</span>
+                    <button className="small danger" onClick={() => detachStandard(std)} aria-label={t("Remove {0} data", t(STD_LABEL[std]))}>✕</button>
+                  </span>
+                ) : (
+                  <label className="button-like">
+                    <input type="file" accept=".s1p,.s2p,.txt" style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; if (f) void attachStandardFile(std, f); e.target.value = ""; }} />
+                    <span style={{ border: "1px solid var(--line)", borderRadius: 6, padding: "3px 8px", cursor: "pointer", color: "var(--fg)", fontSize: 12 }}>{t("Load .s1p")} {t(STD_LABEL[std])}</span>
+                  </label>
+                )}
+              </div>
+            );
+          })}
+        </div>
+        <p className="hint">{t("A measured Touchstone file replaces the polynomial model of that standard (interpolated onto the sweep).")}</p>
         <p className="hint">{t("Kit: {0}. Changing the kit recomputes the active calibration.", t(s.kit.name))}</p>
       </Section>
 
@@ -117,6 +140,9 @@ export function CalibrationPanel() {
         </div>
         <p className="hint">{t("S11 delay is the round-trip time ({0} one way).", si(s.correction.s11Delay / 2, "s"))}</p>
       </Section>
+
+      <FixtureSection />
+      <TwoPortSection />
     </div>
   );
 }

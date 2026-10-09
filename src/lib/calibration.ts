@@ -2,6 +2,7 @@
 // enhanced response, interpolation onto any sweep, electrical delay, JSON save/load.
 import { C, ONE, ZERO, type Complex } from "./complex";
 import type { SweepPoint } from "./litevna";
+import { parseTouchstone } from "./touchstone";
 
 export const Z0 = 50;
 
@@ -18,7 +19,11 @@ export interface CalKit {
   load: { r: number; lPh: number; delayPs: number };
   /** Thru: offset delay [ps] */
   thru: { delayPs: number };
+  /** Measured Γ of a standard (e.g. from a Touchstone file); overrides the polynomial model for that standard. */
+  data?: Partial<Record<"open" | "short" | "load", StandardData>>;
 }
+
+export interface StandardData { name: string; freqs: number[]; gamma: Complex[] }
 
 export const IDEAL_KIT: CalKit = {
   name: "Ideal",
@@ -41,7 +46,27 @@ const withDelay = (g: Complex, f: number, delayPs: number): Complex =>
   delayPs ? C.mul(g, C.expj(-2 * 2 * Math.PI * f * delayPs * 1e-12)) : g;
 const gammaZ = (z: Complex): Complex => C.div(C.sub(z, [Z0, 0]), C.add(z, [Z0, 0]));
 
+/** Linear (re/im) interpolation of measured standard data, clamped to the ends. */
+function dataGamma(d: StandardData, f: number): Complex {
+  const n = d.freqs.length;
+  if (n === 1 || f <= d.freqs[0]) return d.gamma[0];
+  if (f >= d.freqs[n - 1]) return d.gamma[n - 1];
+  let lo = 0, hi = n - 1;
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (d.freqs[m] <= f) lo = m; else hi = m; }
+  return C.lerp(d.gamma[lo], d.gamma[hi], (f - d.freqs[lo]) / (d.freqs[hi] - d.freqs[lo] || 1));
+}
+
+/** Read S11 of a 1-/2-port Touchstone file as a calibration standard. */
+export function standardFromTouchstone(text: string, name: string): StandardData {
+  const { data } = parseTouchstone(text, name);
+  if (!data.length) throw new Error("No data points found in the Touchstone file.");
+  const pts = data.slice().sort((a, b) => a.f - b.f);
+  return { name, freqs: pts.map((p) => p.f), gamma: pts.map((p) => p.s11) };
+}
+
 export function kitGamma(kit: CalKit, std: "open" | "short" | "load", f: number): Complex {
+  const dd = kit.data?.[std];
+  if (dd) return dataGamma(dd, f);
   const w = 2 * Math.PI * f;
   if (std === "open") {
     const o = kit.open;
@@ -116,6 +141,7 @@ export function solveSOL(open: Complex[], short: Complex[], load: Complex[]) {
 }
 
 const isIdeal = (k: CalKit) =>
+  !k.data?.open && !k.data?.short && !k.data?.load &&
   !k.open.c0 && !k.open.c1 && !k.open.c2 && !k.open.c3 && !k.open.delayPs &&
   !k.short.l0 && !k.short.l1 && !k.short.l2 && !k.short.l3 && !k.short.delayPs &&
   k.load.r === 50 && !k.load.lPh && !k.load.delayPs;
@@ -184,6 +210,13 @@ function interp(freqs: number[], arr: Complex[], f: number, hint: { i: number })
   return C.lerp(arr[i], arr[i + 1], t);
 }
 
+/** Error terms resampled onto another frequency grid (linear, clamped at the ends). */
+export function interpTerms(terms: ErrorTerms, freqs: number[]): ErrorTerms {
+  const h = { i: 0 };
+  const g = (a: Complex[] | null) => (a ? freqs.map((f) => interp(terms.freqs, a, f, h)) : null);
+  return { freqs: freqs.slice(), e00: g(terms.e00), e11: g(terms.e11), T: g(terms.T), iso: g(terms.iso), tr: g(terms.tr), e22: g(terms.e22), thruTrue: g(terms.thruTrue) };
+}
+
 export interface Correction {
   s11Delay: number; // seconds (electrical delay / port extension, applied as e^{+jωτ})
   s21Delay: number;
@@ -214,7 +247,7 @@ export function applyCalibration(raw: SweepPoint[], terms: ErrorTerms | null, co
     if (corr.s11Delay) s11 = C.mul(s11, C.expj(w * corr.s11Delay));
     if (corr.s21Delay) s21 = C.mul(s21, C.expj(w * corr.s21Delay));
     if (off !== 1) s21 = C.scale(s21, off);
-    return { f: p.f, s11, s21 };
+    return { ...p, s11, s21 }; // s12/s22 (if any) pass through untouched
   });
 }
 
@@ -235,5 +268,22 @@ export function parseCal(text: string): CalData {
   const o = JSON.parse(text);
   if (o.format !== "webvna-cal" || !Array.isArray(o.freqs)) throw new Error("Not a WebVNA calibration file.");
   delete o.format; delete o.version;
+  validateKitData(o.kit?.data);
   return { kit: IDEAL_KIT, enhancedResponse: false, ...o } as CalData;
+}
+
+/** Validate measured-standard data of a cal kit (`kit.data`); throws on anything malformed. undefined is fine. */
+export function validateKitData(d: unknown): void {
+  if (d === undefined) return;
+  if (!d || typeof d !== "object" || Array.isArray(d)) throw new Error("Malformed calibration kit data.");
+  const finite = (a: unknown) => Number.isFinite(a);
+  for (const std of ["open", "short", "load"] as const) {
+    const e = (d as Record<string, StandardData | undefined>)[std];
+    if (e === undefined) continue;
+    const bad = !e || typeof e !== "object" || typeof e.name !== "string" || !Array.isArray(e.freqs) || !Array.isArray(e.gamma) || !e.freqs.length ||
+      e.freqs.length !== e.gamma.length || !e.freqs.every(finite) ||
+      !e.gamma.every((v: unknown) => Array.isArray(v) && v.length === 2 && finite(v[0]) && finite(v[1]));
+    if (bad) throw new Error(`Malformed ${std} standard data in calibration file.`);
+    if (e.freqs.some((f: number, i: number) => i > 0 && f <= e.freqs[i - 1])) throw new Error(`Frequencies of ${std} standard data must increase.`);
+  }
 }

@@ -2,10 +2,12 @@
 import { C, type Complex } from "./complex";
 import { DATA_MODE, OP, REG, fifoChecksum, identify, isForbiddenWrite, le, MIN_HZ, type DeviceInfo } from "./protocol";
 import type { LinkBase } from "./links";
+import type { DriverCapabilities, VnaDriver } from "./driver";
 
 export const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-export interface SweepPoint { f: number; s11: Complex; s21: Complex }
+/** s12/s22 are present only for full 2-port data (flip-DUT measurement or an imported .s2p). */
+export interface SweepPoint { f: number; s11: Complex; s21: Complex; s12?: Complex; s22?: Complex }
 export type Progress = (fraction: number) => void;
 
 export interface SweepOptions {
@@ -17,7 +19,10 @@ export interface SweepOptions {
 
 export class AbortError extends Error { constructor() { super("Sweep stopped."); this.name = "AbortError"; } }
 
-export class LiteVNA {
+/** Integer clamped to [lo, hi]; NaN → lo. */
+const clampInt = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, Math.round(n) || 0));
+
+export class LiteVNA implements VnaDriver {
   readonly link: LinkBase;
   info: DeviceInfo | null = null;
   stats = { records: 0, badChecksum: 0, zeroChecksum: 0, sweeps: 0, lastSweepMs: 0 };
@@ -25,6 +30,13 @@ export class LiteVNA {
   private queue: Promise<unknown> = Promise.resolve();
 
   constructor(link: LinkBase) { this.link = link; }
+
+  get capabilities(): DriverCapabilities {
+    return {
+      protocol: "v2", maxPoints: this.info?.maxPoints ?? 1024, minHz: MIN_HZ, maxHz: this.info?.maxHz ?? 3e9,
+      screenshot: true, battery: true, ifAverage: true, power: true, channels: true, deviceCal: true, serial: true, clock: true,
+    };
+  }
 
   /** Serialise device access: every public operation runs exclusively. */
   exclusive<T>(fn: () => Promise<T>): Promise<T> {
@@ -82,11 +94,11 @@ export class LiteVNA {
   }
   setPower({ lf, hf }: { lf?: number; hf?: number }) {
     return this.exclusive(async () => {
-      if (lf != null) await this.write1(REG.POWER_LF, lf);
-      if (hf != null) await this.write1(REG.POWER_HF, hf);
+      if (lf != null) await this.write1(REG.POWER_LF, clampInt(lf, 0, 3));
+      if (hf != null) await this.write1(REG.POWER_HF, clampInt(hf, 0, 3));
     });
   }
-  setChannels(mode: number) { return this.exclusive(() => this.write1(REG.CHANNELS, mode)); }
+  setChannels(mode: number) { return this.exclusive(() => this.write1(REG.CHANNELS, clampInt(mode, 0, 2))); }
   setTime(unixSeconds = Math.floor(Date.now() / 1000)) { return this.exclusive(() => this.write4(REG.UNIX_TIME, unixSeconds)); }
   readVbat() { return this.exclusive(async () => (await this.read2(REG.VBAT_MV)) / 1000); }
   setDataMode(mode: number) { return this.exclusive(() => this.write1(REG.DATA_MODE, mode)); }

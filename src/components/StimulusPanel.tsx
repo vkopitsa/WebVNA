@@ -1,7 +1,7 @@
 import { useStore, set } from "../store";
 import { FreqInput, Num, Section, Select, Field } from "./inputs";
 import { restartIfRunning } from "../controller";
-import { MIN_HZ } from "../lib/protocol";
+import { limitsOf } from "../caps";
 import { fmtHz } from "../lib/units";
 import { useT } from "../i18n";
 
@@ -14,13 +14,13 @@ export const BANDS: [string, number, number][] = [
   ["HF 1–30 MHz", 1e6, 30e6], ["Full range", 50e3, 6.3e9],
 ];
 
+const AVERAGES = [1, 2, 3, 4, 5, 8, 9, 16, 25, 32];
 const POINTS = [11, 51, 101, 201, 401, 801, 1001, 1601, 2001, 4001, 10001, 20001, 65535];
 
 export function StimulusPanel() {
   const s = useStore();
   const t = useT();
-  const maxHz = s.info?.maxHz ?? 6.3e9;
-  const maxPts = s.info?.maxPoints || 65535;
+  const { minHz: MIN_HZ, maxHz, maxPoints: maxPts } = limitsOf(s.capabilities);
   const apply = (patch: Partial<typeof s>) => { set(patch); restartIfRunning(); };
   const center = (s.start + s.stop) / 2, span = s.stop - s.start;
   const setRange = (a: number, b: number) => {
@@ -60,10 +60,15 @@ export function StimulusPanel() {
               onChange={(v) => apply({ sweepMode: v })} />
           </Field>
           <Field label="Sweep averaging">
-            <Select value={s.swAverage} ariaLabel="Software averaging" options={[1, 2, 4, 8, 16, 32].map((n) => [n, n === 1 ? t("Off") : t("{0} sweeps", n)] as [number, string])}
-              onChange={(v) => apply({ swAverage: v })} />
+            <Select value={s.swAverage} ariaLabel="Software averaging" options={AVERAGES.map((n) => [n, n === 1 ? t("Off") : t("{0} sweeps", n)] as [number, string])}
+              onChange={(v) => apply({ swAverage: v, swDiscard: Math.min(s.swDiscard, v - 1) })} />
+          </Field>
+          <Field label="Discard">
+            <Select value={Math.min(s.swDiscard, s.swAverage - 1)} ariaLabel="Outlier sweeps to discard" options={Array.from({ length: s.swAverage }, (_, i) => i)}
+              onChange={(v) => apply({ swDiscard: v })} />
           </Field>
         </div>
+        {s.swAverage > 1 && <p className="hint">{t("Per point, the sweeps furthest from the mean are dropped before averaging. NanoVNA-Saver presets (sweeps/discard): 3/0, 5/2, 9/4, 25/6.")}</p>}
         {s.sweepMode === "cw" && (
           <div className="row"><label>{t("CW frequency")}</label><FreqInput value={s.cwFreq} onChange={(v) => apply({ cwFreq: v })} ariaLabel="CW frequency" /></div>
         )}

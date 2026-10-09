@@ -13,9 +13,9 @@ export function MarkerTable() {
   const enabledTraces = traces.map((t, i) => ({ t, i })).filter(({ t }) => t.enabled);
 
   // Pre-compute values of every rectangular trace once per data change.
-  const values = useMemo(() => traces.map((t) => (t.enabled && !FORMAT_BY_ID[t.format].circular ? traceValues(traceData(s, t), t.channel, t.format) : null)),
+  const values = useMemo(() => traces.map((t) => (t.enabled && !FORMAT_BY_ID[t.format].circular ? traceValues(traceData(s, t), t.channel, t.format, { core: s.core }) : null)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [data, traces, s.memories]);
+    [data, traces, s.memories, s.core]);
 
   if (!data.length) return <div className="box"><h3>{tl("Markers")}</h3><p className="hint">{tl("Sweep to see marker readouts.")}</p></div>;
   const ref = deltaRef != null && markers[deltaRef]?.enabled ? markers[deltaRef] : null;

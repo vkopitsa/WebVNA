@@ -2,9 +2,13 @@
   "name": "WebVNA",
   "short_name": "WebVNA",
   "description": "LiteVNA & NanoVNA V2 vector network analyzer in your browser",
+  "id": "./",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
+  "orientation": "any",
+  "categories": ["utilities", "productivity", "education"],
+  "lang": "en",
   "background_color": "#0f1115",
   "theme_color": "#0f1115",
   "icons": [

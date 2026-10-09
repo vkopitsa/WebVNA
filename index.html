@@ -4,8 +4,8 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>WebVNA: LiteVNA &amp; NanoVNA V2 vector network analyzer in your browser</title>
-    <meta name="description" content="Control a LiteVNA or NanoVNA V2 from Chrome or Edge over USB, with no install. Sweep 50 kHz to 6.3 GHz, calibrate, and measure S11, SWR, impedance, Smith chart, S21 and TDR. Free and open source." />
-    <meta name="keywords" content="LiteVNA, NanoVNA, NanoVNA V2, VNA, vector network analyzer, Web Serial, antenna analyzer, SWR, S11, Smith chart, TDR, Touchstone, ham radio" />
+    <meta name="description" content="Control a LiteVNA or NanoVNA V2 (and, experimentally, NanoVNA-H/-H4) from Chrome or Edge over USB, with no install. Sweep 50 kHz to 6.3 GHz, calibrate, and measure S11, SWR, impedance, Smith chart, S21 and TDR. Free and open source." />
+    <meta name="keywords" content="LiteVNA, NanoVNA, NanoVNA V2, NanoVNA-H, NanoVNA-H4, VNA, vector network analyzer, Web Serial, antenna analyzer, SWR, S11, Smith chart, TDR, Touchstone, ham radio" />
     <meta name="author" content="Vladimir Kopitsa" />
     <meta name="robots" content="index, follow" />
     <meta name="theme-color" content="#f4f5f7" media="(prefers-color-scheme: light)" />
@@ -43,7 +43,7 @@
         "@type": "WebApplication",
         "name": "WebVNA",
         "url": "https://vkopitsa.github.io/WebVNA/",
-        "description": "Browser app for the LiteVNA and NanoVNA V2 vector network analyzers over Web Serial: sweeps, calibration, S11/SWR/impedance, Smith chart, S21, TDR and Touchstone files.",
+        "description": "Browser app for the LiteVNA and NanoVNA V2 (experimental: NanoVNA-H/-H4) vector network analyzers over Web Serial: sweeps, calibration, S11/SWR/impedance, Smith chart, S21, TDR and Touchstone files.",
         "applicationCategory": "UtilitiesApplication",
         "operatingSystem": "Windows, macOS, Linux, ChromeOS (Chrome or Edge)",
         "browserRequirements": "Requires Web Serial or WebUSB (Chrome or Edge 89+)",
@@ -60,7 +60,7 @@
     <div id="root"></div>
     <noscript>
       <h1>WebVNA</h1>
-      <p>WebVNA controls a LiteVNA or NanoVNA V2 vector network analyzer from the browser over USB (Web Serial). It needs JavaScript and Chrome or Edge.</p>
+      <p>WebVNA controls a LiteVNA, NanoVNA V2 or (experimental) NanoVNA-H/-H4 vector network analyzer from the browser over USB (Web Serial). It needs JavaScript and Chrome or Edge.</p>
       <p>Source code: <a href="https://github.com/vkopitsa/WebVNA">github.com/vkopitsa/WebVNA</a></p>
     </noscript>
     <script type="module" src="/src/main.tsx"></script>

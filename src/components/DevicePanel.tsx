@@ -1,7 +1,9 @@
 import { useStore, set } from "../store";
 import { Check, Section, Select } from "./inputs";
-import { setIfAverage, setPower, setChannelsMode, readVbat, syncClock, screenshot, setSimDut, isSimulator, getStats, download, reconnectKnown, hasWebSerial } from "../controller";
+import { setIfAverage, setPower, setChannelsMode, readVbat, syncClock, screenshot, setSimDut, setSimModel, isSimulator, getStats, download, reconnectKnown, hasWebSerial } from "../controller";
 import { DUTS } from "../lib/mock";
+import { SIM_MODEL_LABEL } from "../caps";
+import { SIM_MODELS } from "../store";
 import { useT } from "../i18n";
 
 export function DevicePanel() {
@@ -9,19 +11,28 @@ export function DevicePanel() {
   const t = useT();
   const connected = s.status === "connected";
   const stats = getStats();
+  const caps = s.capabilities;
+  const has = (k: "screenshot" | "battery" | "ifAverage" | "power" | "channels" | "deviceCal" | "serial" | "clock") => !caps || caps[k];
+  const shell = caps?.protocol === "v1-shell";
+  const libre = caps?.protocol === "libre";
   return (
     <div>
       <Section title="Device">
         {s.info ? (
           <div className="kv">
             <span>{t("Model")}</span><span>{s.info.model}</span>
-            <span>{t("Hardware rev")}</span><span>{s.info.hardware}</span>
-            <span>{t("Firmware")}</span><span>{s.info.fwMajor}.{s.info.fwMinor}</span>
-            <span>{t("Protocol")}</span><span>{s.info.protocol}</span>
+            {shell || libre ? <>
+              <span>{t("Firmware")}</span><span>{s.info.firmware || "—"}</span>
+              <span>{t("Protocol")}</span><span>{libre ? t("LibreVNA packet protocol {0} (experimental)", s.info.protocol) : t("NanoVNA V1/H/H4 text shell (experimental)")}</span>
+            </> : <>
+              <span>{t("Hardware rev")}</span><span>{s.info.hardware}</span>
+              <span>{t("Firmware")}</span><span>{s.info.fwMajor}.{s.info.fwMinor}</span>
+              <span>{t("Protocol")}</span><span>{s.info.protocol}</span>
+            </>}
             <span>{t("Max points")}</span><span>{s.info.maxPoints}</span>
-            <span>{t("Serial")}</span><span style={{ fontFamily: "monospace", fontSize: 11 }}>{s.serial || "—"}</span>
-            <span>{t("Battery")}</span><span>{s.vbat != null ? `${s.vbat.toFixed(3)} V` : "—"}</span>
-            <span>{t("Link")}</span><span>{s.linkKind}</span>
+            {has("serial") && <><span>{t("Serial")}</span><span style={{ fontFamily: "monospace", fontSize: 11 }}>{s.serial || "—"}</span></>}
+            {has("battery") && <><span>{t("Battery")}</span><span>{s.vbat != null ? `${s.vbat.toFixed(3)} V` : "—"}</span></>}
+            <span>{t("Link")}</span><span>{t(s.linkKind)}</span>
             {stats && <><span>{t("Records")}</span><span>{t("{0} ({1} bad checksum)", stats.records, stats.badChecksum)}</span></>}
             {stats && stats.lastSweepMs > 0 && <><span>{t("Last sweep")}</span><span>{(stats.lastSweepMs / 1000).toFixed(2)} s</span></>}
           </div>
@@ -32,34 +43,41 @@ export function DevicePanel() {
           </>
         )}
         <div className="row" style={{ marginTop: 6 }}>
-          <button disabled={!connected} onClick={() => readVbat()}>{t("Read battery")}</button>
-          <button disabled={!connected} onClick={() => syncClock()}>{t("Set clock")}</button>
-          <button disabled={!connected} onClick={() => screenshot()}>{t("Screenshot")}</button>
+          {has("battery") && <button disabled={!connected} onClick={() => readVbat()}>{t("Read battery")}</button>}
+          {has("clock") && <button disabled={!connected} onClick={() => syncClock()}>{t("Set clock")}</button>}
+          {has("screenshot") && <button disabled={!connected} onClick={() => screenshot()}>{t("Screenshot")}</button>}
         </div>
       </Section>
 
-      <Section title="Instrument">
-        <div className="row">
+      {(has("ifAverage") || has("power") || has("channels")) && <Section title="Instrument">
+        {has("ifAverage") && <div className="row">
           <label>{t("IF averaging")}</label>
           <Select value={s.ifAverage} ariaLabel="IF averaging" options={[1, 2, 3, 5, 10, 20, 40, 80].map((n) => [n, `${n}×`] as [number, string])} onChange={(v) => setIfAverage(v)} />
-        </div>
-        <div className="row">
+        </div>}
+        {has("power") && <><div className="row">
           <label>{t("Power >140 MHz")}</label>
           <Select value={s.powerHf} ariaLabel="High band power" options={[[0, "0 (−9 dB)"], [1, "1 (−6 dB)"], [2, "2 (−3 dB)"], [3, t("3 (max)")]]} onChange={(v) => setPower({ hf: v })} />
         </div>
         <div className="row">
           <label>{t("Power <140 MHz")}</label>
           <Select value={s.powerLf} ariaLabel="Low band power" options={[[0, "0"], [1, t("1 (default)")], [2, "2"], [3, t("3 (max)")]]} onChange={(v) => setPower({ lf: v })} />
-        </div>
-        <div className="row">
+        </div></>}
+        {has("channels") && <div className="row">
           <label>{t("Channels")}</label>
           <Select value={s.channelsMode} ariaLabel="Channels" options={[[0, "S11 + S21"], [1, t("S11 only")], [2, t("S21 only")]]} onChange={(v) => setChannelsMode(v)} />
-        </div>
+        </div>}
         <p className="hint">{t("Higher IF averaging narrows the IF bandwidth: lower noise, slower sweeps. Defaults: 1×, power 1 / 3, both channels.")}</p>
-      </Section>
+      </Section>}
+      {shell && <Section title="Instrument">
+        <p className="hint">{t("This device has no IF averaging, power or channel controls in the shell protocol. Use sweep averaging in the Stimulus tab instead.")}</p>
+      </Section>}
 
       {isSimulator() && (
         <Section title="Simulator">
+          <div className="row">
+            <label>{t("Simulated model")}</label>
+            <Select value={s.simModel} ariaLabel="Simulated model" options={SIM_MODELS.map((m) => [m, t(SIM_MODEL_LABEL[m])] as [typeof m, string])} onChange={(v) => setSimModel(v)} />
+          </div>
           <div className="row">
             <label>{t("Device under test")}</label>
             <Select value={s.simDut} ariaLabel="Simulated DUT" options={DUTS.map((d) => [d, t(d)] as [typeof d, string])} onChange={(v) => setSimDut(v)} />

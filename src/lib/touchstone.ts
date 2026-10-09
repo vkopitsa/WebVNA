@@ -3,6 +3,7 @@ import { C, type Complex } from "./complex";
 import type { SweepPoint } from "./litevna";
 import { Z0 } from "./calibration";
 import { formatValue, impedance, swr } from "./formats";
+import { renormalize1, renormalize2 } from "./s2";
 
 export function writeTouchstone(data: SweepPoint[], ports: 1 | 2, comment = "WebVNA", format: "RI" | "MA" | "DB" = "RI"): string {
   const lines = [`! ${comment}`, `! ${new Date().toISOString()}`, `# Hz S ${format} R ${Z0}`];
@@ -14,8 +15,9 @@ export function writeTouchstone(data: SweepPoint[], ports: 1 | 2, comment = "Web
   };
   for (const p of data) {
     const f = Math.round(p.f);
-    // 2-port order: S11 S21 S12 S22. The LiteVNA measures one direction; S12 = S21, S22 = 0 by convention of NanoVNA tools.
-    lines.push(ports === 1 ? `${f} ${pair(p.s11)}` : `${f} ${pair(p.s11)} ${pair(p.s21)} ${pair(p.s21)} ${pair([0, 0])}`);
+    // 2-port order: S11 S21 S12 S22. Real S12/S22 are written when present (flip-DUT / imported data);
+    // otherwise the LiteVNA's one-direction convention of NanoVNA tools: S12 = S21, S22 = 0.
+    lines.push(ports === 1 ? `${f} ${pair(p.s11)}` : `${f} ${pair(p.s11)} ${pair(p.s21)} ${pair(p.s12 ?? p.s21)} ${pair(p.s22 ?? [0, 0])}`);
   }
   return lines.join("\n") + "\n";
 }
@@ -59,10 +61,10 @@ export function parseTouchstone(text: string, nameHint = ""): TouchstoneFile {
   for (let i = 0; i + per <= nums.length; i += per) {
     const f = nums[i] * unit;
     const s11 = toC(nums[i + 1], nums[i + 2]);
-    const s21 = ports === 2 ? toC(nums[i + 3], nums[i + 4]) : ([0, 0] as Complex);
-    // Renormalise to 50 Ω if the file uses another reference impedance.
-    const s11n = z0 === Z0 ? s11 : (() => { const z = impedance(s11, "s11", z0); return C.div(C.sub(z, [Z0, 0]), C.add(z, [Z0, 0])); })();
-    data.push({ f, s11: s11n, s21 });
+    if (ports === 1) { data.push({ f, s11: renormalize1(s11, z0, Z0), s21: [0, 0] }); continue; }
+    // Touchstone v1 2-port order: S11 S21 S12 S22. Renormalise all four to 50 Ω if the file uses another reference impedance.
+    const [n11, n12, n21, n22] = renormalize2([s11, toC(nums[i + 5], nums[i + 6]), toC(nums[i + 3], nums[i + 4]), toC(nums[i + 7], nums[i + 8])], z0, Z0);
+    data.push({ f, s11: n11, s21: n21, s12: n12, s22: n22 });
   }
   if (!data.length) throw new Error("No data points found in the Touchstone file.");
   return { ports, z0, data, comments };
